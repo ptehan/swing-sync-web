@@ -1,0 +1,58 @@
+// dataModel.js
+// Defines hitters, pitchers, swings, and pitches
+// Provides helper functions for adding, deleting, and retrieving stats
+
+// ==== Structures ====
+// Hitter: { name, swings: [ { swingTime, startFrame, contactFrame, gifUrl, rawGifUrl } ] }
+// Pitcher: { name, pitches: [ { contactFrame, gifUrl, rawGifUrl } ] }
+
+// ==== Hitter Helpers ====
+export function createHitter(name) {
+  return { name, swings: [] };
+}
+
+export function addSwing(hitter, { swingTime, startFrame, contactFrame, gifUrl = null, rawGifUrl = null }) {
+  const swing = { swingTime, startFrame, contactFrame, gifUrl, rawGifUrl };
+  hitter.swings.push(swing);
+  return swing;
+}
+
+export function deleteSwing(hitter, index) {
+  hitter.swings.splice(index, 1);
+}
+
+// ==== Pitcher Helpers ====
+export function createPitcher(name) {
+  return { name, pitches: [] };
+}
+
+export function addPitch(pitcher, { contactFrame, gifUrl = null, rawGifUrl = null }) {
+  const pitch = { contactFrame, gifUrl, rawGifUrl };
+  pitcher.pitches.push(pitch);
+  return pitch;
+}
+
+export function deletePitch(pitcher, index) {
+  pitcher.pitches.splice(index, 1);
+}
+
+// ==== Stats ====
+export function getSwingStats(hitter) {
+  if (!hitter.swings.length) return null;
+
+  const times = hitter.swings.map(s => s.swingTime);
+  const min = Math.min(...times);
+  const max = Math.max(...times);
+  const avg = times.reduce((a, b) => a + b, 0) / times.length;
+
+  return { min, max, avg, count: times.length };
+}
+
+// ==== Find Helpers ====
+export function findHitter(hitters, name) {
+  return hitters.find(h => h.name === name);
+}
+
+export function findPitcher(pitchers, name) {
+  return pitchers.find(p => p.name === name);
+}
