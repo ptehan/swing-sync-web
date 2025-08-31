@@ -1,140 +1,171 @@
-// src/components/AddSwingForm.jsx
-import React, { useState } from "react";
+import React, { useState, useRef, useCallback } from "react";
+import VideoTagger from "./VideoTagger";
+import { saveSwingClip, ensureWebmType } from "../utils/dataModel";
 
-/* =============================================================================
-   AddSwingForm
-   -----------------------------------------------------------------------------
-   Lets you add a swing for a hitter. Expects parent to handle saving.
-   Now includes a "Load Swing Video" button to send video to VideoTagger.
-   ========================================================================== */
+export default function AddSwingForm({ hitters, onAddSwing, constants = { FPS: 30 } }) {
+  const FPS = Number(constants?.FPS) || 30;
 
-export default function AddSwingForm({
-  hitters = [],
-  onAddSwing,
-  taggedStartFrame,
-  taggedContactFrame,
-  clearTags,
-  requestLoadVideoInTagger,
-  constants = { FPS: 30 },
-}) {
-  const [hitterName, setHitterName] = useState("");
-  const [swingTime, setSwingTime] = useState("");
+  const [selectedHitter, setSelectedHitter] = useState("");
+  const [file, setFile] = useState(null);
+  const [videoUrl, setVideoUrl] = useState(null);
   const [description, setDescription] = useState("");
+  const [startFrame, setStartFrame] = useState(null);
+  const [contactFrame, setContactFrame] = useState(null);
+  const [status, setStatus] = useState("");
+  const [error, setError] = useState("");
+  const [lastClipUrl, setLastClipUrl] = useState(null);
 
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    if (!hitterName) {
-      alert("Please select a hitter.");
-      return;
-    }
+  const fileInputRef = useRef(null);
 
-    // Prepare swing payload
-    const data = {
-      startFrame: taggedStartFrame ?? null,
-      contactFrame: taggedContactFrame ?? null,
-      swingTime: swingTime ? Number(swingTime) : null,
-      description: description.trim() || undefined,
-    };
+  const onChangeFile = useCallback((e) => {
+    const f = e.target.files?.[0] || null;
+    setFile(f);
+    setStartFrame(null); 
+    setContactFrame(null);
+    setVideoUrl(f ? URL.createObjectURL(f) : null);
+  }, []);
 
-    onAddSwing(hitterName, data);
+  async function recordSegmentViaVideoStream(srcFile, startSec, endSec) {
+    const mime = "video/webm;codecs=vp9";
+    const video = document.createElement("video");
+    video.muted = true; video.playsInline = true;
+    const wrapper = document.createElement("div");
+    Object.assign(wrapper.style, { position: "fixed", left: "-9999px" });
+    wrapper.appendChild(video);
+    document.body.appendChild(wrapper);
 
-    // Reset
-    setSwingTime("");
-    setDescription("");
-    clearTags();
-  };
+    const url = URL.createObjectURL(srcFile);
+    video.src = url;
+    await new Promise((res, rej) => {
+      video.onloadedmetadata = () => res();
+      video.onerror = () => rej(new Error("Failed to load metadata"));
+    });
 
-  const handleLoadVideo = (e) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      requestLoadVideoInTagger(file, `Swing for ${hitterName || "unknown hitter"}`);
+    const stream = video.captureStream();
+    const recorder = new MediaRecorder(stream, { mimeType: mime });
+    const chunks = [];
+    recorder.ondataavailable = (e) => e.data && chunks.push(e.data);
+    const done = new Promise((res) => (recorder.onstop = () => res()));
+
+    await new Promise((res, rej) => {
+      video.onseeked = () => res();
+      video.onerror = () => rej(new Error("Seek failed"));
+      video.currentTime = startSec;
+    });
+
+    recorder.start(); video.play();
+
+    await new Promise((resolve) => {
+      let raf = 0;
+      const tick = () => {
+        if (video.currentTime >= endSec) {
+          video.pause(); recorder.stop();
+          cancelAnimationFrame(raf); resolve();
+        } else raf = requestAnimationFrame(tick);
+      };
+      raf = requestAnimationFrame(tick);
+    });
+
+    await done;
+    const blob = new Blob(chunks, { type: mime });
+    URL.revokeObjectURL(url); wrapper.remove();
+    return ensureWebmType(blob);
+  }
+
+  const handleSubmit = async (e) => {
+    e.preventDefault(); 
+    setError(""); 
+    setStatus("");
+    if (!selectedHitter || !file || startFrame == null || contactFrame == null) return;
+
+    try {
+      const startClipFrame = Math.max(0, contactFrame - 2 * FPS);
+      const startSec = startClipFrame / FPS;
+      const endSec = (contactFrame + 3) / FPS;
+
+      const clipBlob = await recordSegmentViaVideoStream(file, startSec, endSec);
+
+      // ✅ compute frames directly from trim window
+      const framesInClip = Math.round((endSec - startSec) * FPS);
+
+      const adjustedStartFrame = startFrame - startClipFrame;
+      const adjustedContactFrame = framesInClip - 1; // last frame = contact
+
+      const swingFrames = adjustedContactFrame - adjustedStartFrame;
+      const swingTime = swingFrames > 0 ? swingFrames / FPS : null;
+
+      const videoKey = `swing_${selectedHitter}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      await saveSwingClip(videoKey, clipBlob);
+
+      setLastClipUrl(URL.createObjectURL(clipBlob));
+
+      onAddSwing(selectedHitter, {
+        startFrame: adjustedStartFrame,
+        contactFrame: adjustedContactFrame,
+        swingTime,
+        videoKey,
+        description: description.trim(),
+      });
+
+      setStatus(`Saved ✓ (frames=${framesInClip}, swingFrames=${swingFrames})`);
+    } catch (err) {
+      console.error("[AddSwingForm] save failed:", err);
+      setError(err.message || "Failed to save swing.");
     }
   };
 
   return (
-    <form onSubmit={handleSubmit} style={{ marginBottom: "1rem" }}>
+    <form onSubmit={handleSubmit} style={{ display: "grid", gap: "12px" }}>
       <h3>Add Swing</h3>
 
-      {/* Hitter selection */}
-      <div style={{ display: "grid", gap: 6, marginBottom: 8 }}>
-        <label>
-          <div style={{ fontSize: 12, opacity: 0.85 }}>Hitter</div>
-          <select
-            value={hitterName}
-            onChange={(e) => setHitterName(e.target.value)}
-          >
-            <option value="">— Select hitter —</option>
-            {hitters.map((h) => (
-              <option key={h.name} value={h.name}>
-                {h.name}
-                {h.teamName ? ` • ${h.teamName}` : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
+      <label>
+        Hitter:
+        <select value={selectedHitter} onChange={(e) => setSelectedHitter(e.target.value)}>
+          <option value="">-- Select Hitter --</option>
+          {hitters.map((h) => <option key={h.name} value={h.name}>{h.name}</option>)}
+        </select>
+      </label>
 
-      {/* Load swing video */}
-      <div style={{ marginBottom: 12 }}>
-        <label style={{ fontSize: 12, opacity: 0.85, display: "block" }}>
-          Load Swing Video
-        </label>
-        <input type="file" accept="video/*" onChange={handleLoadVideo} />
-      </div>
+      <label>
+        Swing Video:
+        <input ref={fileInputRef} type="file" accept="video/*" onChange={onChangeFile} />
+      </label>
 
-      {/* Swing time */}
-      <div style={{ display: "grid", gap: 6, marginBottom: 8 }}>
-        <label>
-          <div style={{ fontSize: 12, opacity: 0.85 }}>Swing Time (s)</div>
-          <input
-            type="number"
-            step="0.001"
-            placeholder="optional"
-            value={swingTime}
-            onChange={(e) => setSwingTime(e.target.value)}
-          />
-        </label>
-      </div>
-
-      {/* Description */}
-      <div style={{ display: "grid", gap: 6, marginBottom: 12 }}>
-        <label>
-          <div style={{ fontSize: 12, opacity: 0.85 }}>
-            Description (optional)
-          </div>
-          <input
-            type="text"
-            placeholder="e.g., leg kick, quick load"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-          />
-        </label>
-      </div>
-
-      {/* Tagged frames info */}
-      {(taggedStartFrame != null || taggedContactFrame != null) && (
-        <div
-          style={{
-            fontSize: 12,
-            marginBottom: 12,
-            padding: "4px 6px",
-            background: "#f0f0f0",
-            borderRadius: 4,
+      {videoUrl && (
+        <VideoTagger
+          source={videoUrl}
+          metadata={{ label: `Swing tagging: ${selectedHitter}` }}
+          onTagSwing={({ startFrame: s, contactFrame: c }) => {
+            if (Number.isFinite(s)) setStartFrame(s);
+            if (Number.isFinite(c)) setContactFrame(c);
           }}
-        >
-          Tagged Frames: {taggedStartFrame ?? "—"} →{" "}
-          {taggedContactFrame ?? "—"}
-          <button
-            type="button"
-            onClick={clearTags}
-            style={{ marginLeft: 8, fontSize: 12 }}
-          >
-            Clear
-          </button>
-        </div>
+        />
       )}
 
-      <button type="submit">Add Swing</button>
+      {(startFrame != null || contactFrame != null) && (
+        <div>Tagged: start={startFrame ?? "—"}, contact={contactFrame ?? "—"}</div>
+      )}
+
+      <label>
+        Description:
+        <input type="text" value={description} onChange={(e) => setDescription(e.target.value)} />
+      </label>
+
+      <button
+        type="submit"
+        disabled={!selectedHitter || !file || startFrame == null || contactFrame == null}
+      >
+        Save Swing
+      </button>
+
+      {status && <div style={{ color: "green" }}>{status}</div>}
+      {error && <div style={{ color: "crimson" }}>{error}</div>}
+
+      {lastClipUrl && (
+        <div style={{ marginTop: "8px" }}>
+          <video src={lastClipUrl} controls style={{ maxWidth: "100%" }} />
+        </div>
+      )}
     </form>
   );
 }

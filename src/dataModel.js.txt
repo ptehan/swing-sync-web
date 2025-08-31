@@ -1,4 +1,4 @@
-// dataModel.js
+// src/utils/dataModel.js
 // Defines hitters, pitchers, swings, and pitches
 // Provides helper functions for adding, deleting, and retrieving stats
 
@@ -11,7 +11,10 @@ export function createHitter(name) {
   return { name, swings: [] };
 }
 
-export function addSwing(hitter, { swingTime, startFrame, contactFrame, gifUrl = null, rawGifUrl = null }) {
+export function addSwing(
+  hitter,
+  { swingTime, startFrame, contactFrame, gifUrl = null, rawGifUrl = null }
+) {
   const swing = { swingTime, startFrame, contactFrame, gifUrl, rawGifUrl };
   hitter.swings.push(swing);
   return swing;
@@ -26,7 +29,10 @@ export function createPitcher(name) {
   return { name, pitches: [] };
 }
 
-export function addPitch(pitcher, { contactFrame, gifUrl = null, rawGifUrl = null }) {
+export function addPitch(
+  pitcher,
+  { contactFrame, gifUrl = null, rawGifUrl = null }
+) {
   const pitch = { contactFrame, gifUrl, rawGifUrl };
   pitcher.pitches.push(pitch);
   return pitch;
@@ -36,11 +42,107 @@ export function deletePitch(pitcher, index) {
   pitcher.pitches.splice(index, 1);
 }
 
+// ==== Pitch Clip Creator ====
+// Creates a 2s-pre-contact → contact clip and stores it in IndexedDB
+export async function createPitch({ file, contactFrame, description = "" }, fps = 30) {
+  if (!file) throw new Error("createPitch: file required");
+  if (contactFrame == null) throw new Error("createPitch: contactFrame required");
+
+  const startSeconds = Math.max(0, (contactFrame - fps * 2) / fps); // 2s before contact
+  const endSeconds = contactFrame / fps;
+
+  const video = document.createElement("video");
+  video.src = URL.createObjectURL(file);
+
+  await new Promise((resolve, reject) => {
+    video.onloadedmetadata = () => resolve();
+    video.onerror = (e) => reject(e);
+  });
+
+  const stream = video.captureStream();
+  const recorder = new MediaRecorder(stream, { mimeType: "video/webm" });
+  const chunks = [];
+
+  recorder.ondataavailable = (e) => {
+    if (e.data.size > 0) chunks.push(e.data);
+  };
+
+  const blobPromise = new Promise((resolve) => {
+    recorder.onstop = () => resolve(new Blob(chunks, { type: "video/webm" }));
+  });
+
+  recorder.start();
+  video.currentTime = startSeconds;
+  video.play();
+
+  await new Promise((resolve) => {
+    const interval = setInterval(() => {
+      if (video.currentTime >= endSeconds) {
+        recorder.stop();
+        clearInterval(interval);
+        video.pause();
+        resolve();
+      }
+    }, 50);
+  });
+
+  const blob = await blobPromise;
+  const videoKey = `pitch-${Date.now()}`;
+
+  await saveToIndexedDB(videoKey, blob);
+
+  return { videoKey, contactFrame, description, trimStartFrames: contactFrame - fps * 2 };
+}
+
+// ==== IndexedDB helpers ====
+function saveToIndexedDB(key, blob) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("SwingSyncDB", 1);
+
+    request.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains("videos")) {
+        db.createObjectStore("videos");
+      }
+    };
+
+    request.onsuccess = (e) => {
+      const db = e.target.result;
+      const tx = db.transaction("videos", "readwrite");
+      const store = tx.objectStore("videos");
+      store.put(blob, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = (err) => reject(err);
+    };
+
+    request.onerror = (err) => reject(err);
+  });
+}
+
+// ✅ NEW: Retrieve pitch clip by key
+export function getPitchClipBlob(key) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("SwingSyncDB", 1);
+
+    request.onsuccess = (e) => {
+      const db = e.target.result;
+      const tx = db.transaction("videos", "readonly");
+      const store = tx.objectStore("videos");
+      const getReq = store.get(key);
+
+      getReq.onsuccess = () => resolve(getReq.result || null);
+      getReq.onerror = (err) => reject(err);
+    };
+
+    request.onerror = (err) => reject(err);
+  });
+}
+
 // ==== Stats ====
 export function getSwingStats(hitter) {
   if (!hitter.swings.length) return null;
 
-  const times = hitter.swings.map(s => s.swingTime);
+  const times = hitter.swings.map((s) => s.swingTime);
   const min = Math.min(...times);
   const max = Math.max(...times);
   const avg = times.reduce((a, b) => a + b, 0) / times.length;
@@ -50,9 +152,9 @@ export function getSwingStats(hitter) {
 
 // ==== Find Helpers ====
 export function findHitter(hitters, name) {
-  return hitters.find(h => h.name === name);
+  return hitters.find((h) => h.name === name);
 }
 
 export function findPitcher(pitchers, name) {
-  return pitchers.find(p => p.name === name);
+  return pitchers.find((p) => p.name === name);
 }
