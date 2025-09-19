@@ -1,12 +1,16 @@
 // src/App.jsx
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import CreateHitterForm from "./components/CreateHitterForm";
+import CreatePitcherForm from "./components/CreatePitcherForm";
+import CreateTeamForm from "./components/CreateTeamForm";
 import AddSwingForm from "./components/AddSwingForm";
 import AddPitchForm from "./components/AddPitchForm";
 import MatchupSimulator from "./components/MatchupSimulator";
 import VideoTagger from "./components/VideoTagger";
+import ClipsLibrary from "./components/ClipsLibrary";
 import Modal from "./components/Modal";
 import logo from "/swing-sync-logo.png";
+import { deleteAllClips } from "./utils/dataModel";
 
 import {
   createHitter,
@@ -14,8 +18,10 @@ import {
   createPitcher,
   findPitcher,
   deletePitchClip,
+  deleteSwingClip,
+  deleteMatchupClip,   // ✅ added
   getPitchClipBlob,
-  getSwingClipBlob,   // ✅ added for swing previews
+  getSwingClipBlob,
 } from "./utils/dataModel";
 
 const FPS = 30;
@@ -45,16 +51,14 @@ export default function App() {
   const [pitches, setPitches] = useState([]);
   const [teams, setTeams] = useState([]);
   const [hydrated, setHydrated] = useState(false);
-
+  const [matchups, setMatchups] = useState([]);
   const [openModal, setOpenModal] = useState(null);
 
-  // 🔒 Video modal is independent so other modals (Matchup) stay open
   const [videoOpen, setVideoOpen] = useState(false);
   const [activeVideoSource, setActiveVideoSource] = useState(null);
   const [activeVideoLabel, setActiveVideoLabel] = useState("");
   const currentObjectUrlRef = useRef(null);
 
-  // 🔧 Swing tags live at App level so AddSwingForm can see right-pane tags
   const [swingTagStart, setSwingTagStart] = useState(null);
   const [swingTagContact, setSwingTagContact] = useState(null);
   const clearSwingTags = useCallback(() => {
@@ -71,14 +75,15 @@ export default function App() {
       setSwings(loaded.swings || []);
       setPitches(loaded.pitches || []);
       setTeams(loaded.teams || []);
+      setMatchups(loaded.matchups || []);
     }
     setHydrated(true);
   }, []);
 
   useEffect(() => {
     if (!hydrated) return;
-    saveAppState({ hitters, pitchers, swings, pitches, teams });
-  }, [hydrated, hitters, pitchers, swings, pitches, teams]);
+    saveAppState({ hitters, pitchers, swings, pitches, teams, matchups });
+  }, [hydrated, hitters, pitchers, swings, pitches, teams, matchups]);
 
   // ---------- Video ----------
   const revokeIfNeeded = useCallback(() => {
@@ -91,7 +96,6 @@ export default function App() {
   }, []);
   useEffect(() => () => revokeIfNeeded(), [revokeIfNeeded]);
 
-  // ✅ Open video modal without touching openModal (so Matchup stays open)
   const requestLoadVideoInTagger = useCallback(
     (source, label = "") => {
       setActiveVideoLabel(label || "");
@@ -178,13 +182,15 @@ export default function App() {
     async (globalIndex) => {
       const target = swings[globalIndex];
       if (!target) return;
+
       if (target.videoKey) {
         try {
-          await deletePitchClip(target.videoKey);
+          await deleteSwingClip(target.videoKey);
         } catch (e) {
           console.warn("Failed to delete swing clip", target.videoKey, e);
         }
       }
+
       setSwings((prev) => prev.filter((_, idx) => idx !== globalIndex));
     },
     [swings]
@@ -204,21 +210,34 @@ export default function App() {
         }
       }
 
-      let seen = -1;
+      let count = -1;
       setPitches((prev) =>
         prev.filter((p) => {
           if (p.pitcherName !== pitcherName) return true;
-          seen += 1;
-          return seen !== filteredIndex;
+          count++;
+          return count !== filteredIndex;
         })
       );
     },
     [pitches]
   );
 
-  // ---------- UI ----------
-  const smallMeta = { fontSize: 12, opacity: 0.75 };
+  const deleteMatchupItem = useCallback(
+    async (index) => {
+      setMatchups((prev) => {
+        const target = prev[index];
+        if (target?.videoKey) {
+          deleteMatchupClip(target.videoKey).catch((e) =>
+            console.warn("Failed to delete matchup clip", target.videoKey, e)
+          );
+        }
+        return prev.filter((_, i) => i !== index);
+      });
+    },
+    []
+  );
 
+  // ---------- UI ----------
   return (
     <div
       style={{
@@ -244,16 +263,44 @@ export default function App() {
           maxWidth: 320,
         }}
       >
-        <button onClick={() => setOpenModal("matchup")}>
-          Matchup Simulator
-        </button>
+        <button onClick={() => setOpenModal("matchup")}>Matchup Simulator</button>
         <button onClick={() => setOpenModal("swing")}>Add Swing</button>
         <button onClick={() => setOpenModal("pitch")}>Add Pitch</button>
         <button onClick={() => setOpenModal("hitters")}>Hitters</button>
         <button onClick={() => setOpenModal("pitchers")}>Pitchers</button>
         <button onClick={() => setOpenModal("teams")}>Teams</button>
+        <button onClick={() => setOpenModal("clips")}>Clips Library</button>
         <button onClick={() => setVideoOpen(true)}>Video Player</button>
+        <button
+          style={{ background: "crimson", color: "white" }}
+          onClick={() => {
+            if (
+              window.confirm(
+                "Delete ALL saved clips (swings, pitches, matchups)?"
+              )
+            ) {
+              deleteAllClips();
+              setSwings([]);
+              setPitches([]);
+              setHitters([]);
+              setPitchers([]);
+              setMatchups([]);
+              alert("All clips and state cleared.");
+            }
+          }}
+        >
+          Reset All Clips
+        </button>
       </div>
+
+      {/* Teams */}
+      <Modal
+        open={openModal === "teams"}
+        onClose={() => setOpenModal(null)}
+        title="Teams"
+      >
+        <CreateTeamForm onAddTeam={addTeam} onDeleteTeam={deleteTeam} teams={teams} />
+      </Modal>
 
       {/* Matchup */}
       <Modal
@@ -266,6 +313,8 @@ export default function App() {
           swings={swings}
           pitchers={pitchers}
           pitches={pitches}
+          matchups={matchups}
+          setMatchups={setMatchups}
           requestLoadVideoInTagger={requestLoadVideoInTagger}
         />
       </Modal>
@@ -285,6 +334,7 @@ export default function App() {
           taggedStartFrame={swingTagStart}
           taggedContactFrame={swingTagContact}
           clearTags={clearSwingTags}
+          onClose={() => setOpenModal(null)}
         />
       </Modal>
 
@@ -300,6 +350,7 @@ export default function App() {
           teams={teams}
           constants={{ FPS }}
           requestLoadVideoInTagger={requestLoadVideoInTagger}
+          onClose={() => setOpenModal(null)}
         />
       </Modal>
 
@@ -310,99 +361,6 @@ export default function App() {
         title="Hitters"
       >
         <CreateHitterForm onAddHitter={addHitter} teams={teams} />
-
-        <div style={{ marginTop: 12 }}>
-          {hitters.map((h) => {
-            const globalIdxs = [];
-            const swingsFor = [];
-            swings.forEach((s, idx) => {
-              if (s.hitterName === h.name) {
-                globalIdxs.push(idx);
-                swingsFor.push(s);
-              }
-            });
-
-            return (
-              <details
-                key={h.name}
-                style={{ borderBottom: "1px solid #eee", padding: "6px 0" }}
-              >
-                <summary style={{ cursor: "pointer", userSelect: "none" }}>
-                  <strong>{h.name}</strong>{" "}
-                  <span style={smallMeta}>
-                    • {swingsFor.length} swing
-                    {swingsFor.length === 1 ? "" : "s"}
-                  </span>
-                </summary>
-                <div style={{ paddingLeft: 14, paddingTop: 6 }}>
-                  {swingsFor.length === 0 ? (
-                    <div style={{ fontSize: 12, opacity: 0.7 }}>
-                      No swings.
-                    </div>
-                  ) : (
-                    swingsFor.map((s, i) => {
-                      const globalIndex = globalIdxs[i];
-                      return (
-                        <div
-                          key={`${h.name}-swing-${i}`}
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 8,
-                            fontSize: 12,
-                            padding: "2px 0",
-                          }}
-                        >
-                          <span>
-                            Swing {i + 1} —{" "}
-                            {Number.isFinite(s.startFrame) &&
-                            Number.isFinite(s.contactFrame)
-                              ? `frames ${s.startFrame}→${s.contactFrame}`
-                              : Number.isFinite(s.swingTime)
-                              ? `time ${Number(s.swingTime).toFixed(3)}s`
-                              : "time —"}
-                            {s.videoKey ? " • saved" : " • no clip"}
-                          </span>
-                          {s.videoKey && (
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                try {
-                                  const blob = await getSwingClipBlob(s.videoKey);
-                                  if (!blob) {
-                                    alert("No clip found for this swing.");
-                                    return;
-                                  }
-                                  requestLoadVideoInTagger(
-                                    blob,
-                                    `${h.name} Swing ${i + 1}`
-                                  );
-                                } catch (err) {
-                                  console.error("Swing preview failed", err);
-                                  alert("Failed to load swing preview.");
-                                }
-                              }}
-                              style={{ fontSize: 12 }}
-                            >
-                              Preview
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            style={{ marginLeft: "auto" }}
-                            onClick={() => deleteSwingItem(globalIndex)}
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </details>
-            );
-          })}
-        </div>
       </Modal>
 
       {/* Pitchers */}
@@ -411,127 +369,34 @@ export default function App() {
         onClose={() => setOpenModal(null)}
         title="Pitchers"
       >
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            const name = e.currentTarget.pitcherName.value.trim();
-            if (!name) return;
-            if (!findPitcher(pitchers, name)) {
-              setPitchers([...pitchers, { ...createPitcher(name) }]);
-            }
-            e.currentTarget.reset();
-          }}
-          style={{ display: "flex", gap: 8, marginBottom: 12 }}
-        >
-          <input
-            name="pitcherName"
-            type="text"
-            placeholder="New pitcher name"
-            style={{ flex: 1 }}
-          />
-          <button type="submit">Add</button>
-        </form>
+        <CreatePitcherForm
+          pitchers={pitchers}
+          pitches={pitches}
+          onAddPitcher={addPitcher}
+          onDeletePitcher={deletePitcher}
+          onDeletePitch={deletePitchItem}
+          requestLoadVideoInTagger={requestLoadVideoInTagger}
+          teams={teams}
+        />
+      </Modal>
 
-        <div style={{ marginTop: 4 }}>
-          {pitchers.map((p) => {
-            const pitchesFor = pitches.filter(
-              (pt) => pt.pitcherName === p.name
-            );
-            return (
-              <details
-                key={p.name}
-                style={{ borderBottom: "1px solid #eee", padding: "6px 0" }}
-              >
-                <summary style={{ cursor: "pointer", userSelect: "none" }}>
-                  <strong>{p.name}</strong>{" "}
-                  <span style={smallMeta}>
-                    • {pitchesFor.length} pitch
-                    {pitchesFor.length === 1 ? "" : "es"}
-                  </span>
-                </summary>
-
-                <div style={{ paddingLeft: 14, paddingTop: 6 }}>
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      marginBottom: 6,
-                    }}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPitchers(pitchers.filter((x) => x.name !== p.name));
-                        setPitches(
-                          pitches.filter((pt) => pt.pitcherName !== p.name)
-                        );
-                      }}
-                      style={{ fontSize: 12 }}
-                      title="Delete pitcher and their pitches"
-                    >
-                      Delete pitcher
-                    </button>
-                  </div>
-
-                  {pitchesFor.length === 0 ? (
-                    <div style={{ fontSize: 12, opacity: 0.7 }}>
-                      No pitches.
-                    </div>
-                  ) : (
-                    pitchesFor.map((pt, i) => (
-                      <div
-                        key={`${p.name}-pitch-${i}`}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 8,
-                          fontSize: 12,
-                          padding: "2px 0",
-                        }}
-                      >
-                        <span>
-                          Pitch {i + 1} — contact {pt.contactFrame}
-                          {pt.videoKey ? " • saved" : " • no clip"}
-                        </span>
-                        {pt.videoKey && (
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              try {
-                                const blob = await getPitchClipBlob(pt.videoKey);
-                                if (!blob) {
-                                  alert("No clip found for this pitch.");
-                                  return;
-                                }
-                                requestLoadVideoInTagger(
-                                  blob,
-                                  `${p.name} Pitch ${i + 1}`
-                                );
-                              } catch (err) {
-                                console.error("Pitch preview failed", err);
-                                alert("Failed to load pitch preview.");
-                              }
-                            }}
-                            style={{ fontSize: 12 }}
-                          >
-                            Preview
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          style={{ marginLeft: "auto" }}
-                          onClick={() => deletePitchItem(p.name, i)}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </details>
-            );
-          })}
-        </div>
+      {/* Clips Library */}
+      <Modal
+        open={openModal === "clips"}
+        onClose={() => setOpenModal(null)}
+        title="Clips Library"
+      >
+        <ClipsLibrary
+          hitters={hitters}
+          swings={swings}
+          pitchers={pitchers}
+          pitches={pitches}
+          matchups={matchups}
+          requestLoadVideoInTagger={requestLoadVideoInTagger}
+          onDeleteSwing={deleteSwingItem}
+          onDeletePitch={deletePitchItem}
+          onDeleteMatchup={deleteMatchupItem}
+        />
       </Modal>
 
       {/* Video modal */}

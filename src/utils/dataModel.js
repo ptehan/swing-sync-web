@@ -1,17 +1,18 @@
 // src/utils/dataModel.js
 /* =====================================================================================
-   Swing Sync Data Model — IndexedDB storage for pitch + swing clips
+   Swing Sync Data Model — IndexedDB storage for pitch + swing + matchup clips
    -------------------------------------------------------------------------------------
    Stores both Blob + bytes for reliability.
-   Provides save/get/delete/list functions for both PITCH and SWING clips.
+   Provides save/get/delete/list functions for PITCH, SWING, and MATCHUP clips.
    ===================================================================================== */
 
 /* ===== Constants ===== */
 export const DB_NAME = "SwingSyncDB_v2";
-export const DB_VERSION = 1;
+export const DB_VERSION = 2; // bump version for new store
 
 export const STORE_PITCH_CLIPS = "pitchClips";
 export const STORE_SWING_CLIPS = "swingClips";
+export const STORE_MATCHUP_CLIPS = "matchupClips";
 
 /* ===== Utilities ===== */
 export function ensureWebmType(blob) {
@@ -43,6 +44,9 @@ function openDB() {
       }
       if (!db.objectStoreNames.contains(STORE_SWING_CLIPS)) {
         db.createObjectStore(STORE_SWING_CLIPS, { keyPath: "key" });
+      }
+      if (!db.objectStoreNames.contains(STORE_MATCHUP_CLIPS)) {
+        db.createObjectStore(STORE_MATCHUP_CLIPS, { keyPath: "key" });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -187,6 +191,74 @@ export async function listSwingClipKeys() {
 }
 
 /* =====================================================================================
+   MATCHUP CLIP API
+   ===================================================================================== */
+export async function saveMatchupClip(videoKey, blob) {
+  const db = await openDB();
+  const bytes = await blob.arrayBuffer();
+  const type = blob.type && blob.type.startsWith("video/") ? blob.type : "video/webm";
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_MATCHUP_CLIPS, "readwrite");
+    tx.objectStore(STORE_MATCHUP_CLIPS).put({
+      key: videoKey,
+      blob,
+      bytes,
+      type,
+      createdAt: Date.now(),
+    });
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}
+
+export async function getMatchupClipBlob(videoKey) {
+  const db = await openDB();
+  const rec = await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_MATCHUP_CLIPS, "readonly");
+    const req = tx.objectStore(STORE_MATCHUP_CLIPS).get(videoKey);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+  db.close();
+
+  if (!rec) return null;
+  if (rec.blob instanceof Blob && rec.blob.size) return ensureWebmType(rec.blob);
+  if (rec.bytes) return ensureWebmType(blobFromBytes(rec.bytes, rec.type));
+  return null;
+}
+
+export async function deleteMatchupClip(videoKey) {
+  const db = await openDB();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_MATCHUP_CLIPS, "readwrite");
+    tx.objectStore(STORE_MATCHUP_CLIPS).delete(videoKey);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}
+
+export async function listMatchupClipKeys() {
+  const db = await openDB();
+  const keys = await new Promise((resolve, reject) => {
+    const out = [];
+    const tx = db.transaction(STORE_MATCHUP_CLIPS, "readonly");
+    const req = tx.objectStore(STORE_MATCHUP_CLIPS).openKeyCursor();
+    req.onsuccess = (e) => {
+      const cur = e.target.result;
+      if (cur) {
+        out.push(cur.key);
+        cur.continue();
+      } else resolve(out);
+    };
+    req.onerror = () => reject(req.error);
+  });
+  db.close();
+  return keys;
+}
+
+/* =====================================================================================
    Legacy helpers (unchanged, still useful for App.jsx state)
    ===================================================================================== */
 export function createHitter(name) {
@@ -200,9 +272,15 @@ export function deleteSwing(hitter, index) {
   hitter.swings.splice(index, 1);
 }
 
-export function createPitcher(name) {
-  return { name, pitches: [] };
+export function createPitcher(name, description = "", teamName = "") {
+  return { 
+    name, 
+    description, 
+    teamName, 
+    pitches: [] 
+  };
 }
+
 export function addPitch(pitcher, pitch) {
   pitcher.pitches.push(pitch);
   return pitch;
@@ -216,4 +294,28 @@ export function findHitter(hitters, name) {
 }
 export function findPitcher(pitchers, name) {
   return pitchers.find((p) => p.name === name);
+}
+
+export async function deleteAllClips() {
+  // clear indexedDB stores
+  const db = await openDB();
+  await Promise.all(
+    Array.from(db.objectStoreNames).map(
+      (storeName) =>
+        new Promise((resolve, reject) => {
+          const tx = db.transaction(storeName, "readwrite");
+          tx.objectStore(storeName).clear();
+          tx.oncomplete = resolve;
+          tx.onerror = () => reject(tx.error);
+        })
+    )
+  );
+  db.close();
+
+  // clear matchup blobs from localStorage
+  Object.keys(localStorage)
+    .filter((k) => k.startsWith("matchupClip_"))
+    .forEach((k) => localStorage.removeItem(k));
+
+  console.log("✅ All clips deleted (pitches, swings, matchups)");
 }
