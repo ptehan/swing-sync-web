@@ -4,7 +4,7 @@ import path from 'path';
 
 export default defineConfig({
   plugins: [react()],
-  base: './',
+  base: '/swing-sync-web/',   // 👈 the repo name here
   resolve: {
     alias: {
       '@ffmpeg/ffmpeg': path.resolve(
@@ -15,7 +15,7 @@ export default defineConfig({
   },
   assetsInclude: ['**/*.wasm'],
   optimizeDeps: {
-    exclude: ['@ffmpeg/ffmpeg'], // 👈 force Vite NOT to prebundle it
+    exclude: ['@ffmpeg/ffmpeg'],
   },
   server: {
     fs: {
