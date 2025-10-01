@@ -92,7 +92,7 @@ export default function AddSwingForm({
     if (!selectedHitter || !file || startFrame == null || contactFrame == null) return;
 
     try {
-      const startClipFrame = Math.max(0, contactFrame - 2 * FPS);
+      const startClipFrame = Math.max(0, contactFrame * FPS);
       const startSec = startClipFrame / FPS;
       const endSec = (contactFrame ) / FPS;
 
@@ -100,7 +100,7 @@ export default function AddSwingForm({
 
       const framesInClip = Math.round((endSec - startSec) * FPS);
       const adjustedStartFrame = startFrame - startClipFrame;
-      const adjustedContactFrame = framesInClip - 1;
+      const adjustedContactFrame = framesInClip ;
       const swingFrames = adjustedContactFrame - adjustedStartFrame;
       const swingTime = swingFrames > 0 ? swingFrames / FPS : null;
 
