@@ -34,7 +34,7 @@ export default function AddSwingForm({
   }, []);
 
   // -------------------------------------------------------------------
-  // Extract frames and re-encode only the tagged range
+  // Frame-exact: extract → slice → re-encode
   async function cutByFrames(srcFile, startFrame, endFrame) {
     if (!ffmpeg.loaded) {
       await ffmpeg.load({
@@ -44,38 +44,36 @@ export default function AddSwingForm({
       });
     }
 
-    // Write the input file
     await ffmpeg.writeFile("input.webm", new Uint8Array(await srcFile.arrayBuffer()));
 
-    // Extract all frames at fixed FPS
+    // 1. Extract all frames at fixed FPS
     await ffmpeg.exec([
       "-i", "input.webm",
       "-vf", `fps=${FPS}`,
-      "frame_%05d.png"
+      "frame_%05d.png",
     ]);
 
+    // 2. Re-encode only the selected range
     const frameCount = endFrame - startFrame + 1;
-
-    // Rebuild from only the tagged frames
     await ffmpeg.exec([
       "-framerate", String(FPS),
-      "-start_number", String(startFrame + 1), // frame_%05d is 1-based
+      "-start_number", String(startFrame + 1), // extracted frames are 1-based
       "-i", "frame_%05d.png",
       "-frames:v", String(frameCount),
       "-c:v", "libvpx-vp9",
-      "out.webm"
+      "out.webm",
     ]);
 
     const data = await ffmpeg.readFile("out.webm");
     const blob = new Blob([data.buffer], { type: "video/webm" });
 
-    // Cleanup extracted frames (optional: could skip for speed if space isn’t tight)
+    // 3. Cleanup (optional but keeps memory low)
+    try { await ffmpeg.deleteFile("input.webm"); } catch {}
+    try { await ffmpeg.deleteFile("out.webm"); } catch {}
     for (let i = startFrame + 1; i <= endFrame + 1; i++) {
       const fname = `frame_${String(i).padStart(5, "0")}.png`;
       try { await ffmpeg.deleteFile(fname); } catch {}
     }
-    await ffmpeg.deleteFile("input.webm");
-    await ffmpeg.deleteFile("out.webm");
 
     return blob;
   }
