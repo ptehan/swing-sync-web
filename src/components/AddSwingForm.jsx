@@ -2,9 +2,6 @@
 import React, { useState, useRef, useCallback } from "react";
 import VideoTagger from "./VideoTagger";
 import { saveSwingClip } from "../utils/dataModel";
-import { FFmpeg } from "@ffmpeg/ffmpeg";
-
-const ffmpeg = new FFmpeg({ log: true });
 
 export default function AddSwingForm({
   hitters,
@@ -34,56 +31,63 @@ export default function AddSwingForm({
   }, []);
 
   // -------------------------------------------------------------------
-  // True frame-exact: extract all → filter in JS → rebuild
-  async function cutByFrames(srcFile, startFrame, endFrame) {
-    if (!ffmpeg.loaded) {
-      await ffmpeg.load({
-        coreURL: window.location.origin + "/swing-sync-web/ffmpeg/ffmpeg-core.js",
-        wasmURL: window.location.origin + "/swing-sync-web/ffmpeg/ffmpeg-core.wasm",
-        workerURL: window.location.origin + "/swing-sync-web/ffmpeg/ffmpeg-core.worker.js",
-      });
-    }
+  // Record exact segment via captureStream
+  async function recordByFrames(srcFile, startFrame, endFrame) {
+    const startSec = startFrame / FPS;
+    const endSec = (endFrame + 1) / FPS; // +1 ensures contact frame is included
 
-    // 1. Write input
-    await ffmpeg.writeFile("input.webm", new Uint8Array(await srcFile.arrayBuffer()));
+    const video = document.createElement("video");
+    video.src = URL.createObjectURL(srcFile);
+    video.muted = true;
+    video.playsInline = true;
 
-    // 2. Dump ALL frames
-    await ffmpeg.exec([
-      "-i", "input.webm",
-      "-vf", `fps=${FPS}`,
-      "frame_%05d.png",
-    ]);
+    // hide offscreen
+    const wrapper = document.createElement("div");
+    wrapper.style.position = "fixed";
+    wrapper.style.left = "-9999px";
+    wrapper.appendChild(video);
+    document.body.appendChild(wrapper);
 
-    // 3. Select only the frames we want and rewrite them contiguously
-    const wantedCount = endFrame - startFrame + 1;
-    for (let i = 0; i < wantedCount; i++) {
-      const srcName = `frame_${String(startFrame + 1 + i).padStart(5, "0")}.png`;
-      const destName = `sel_${String(i + 1).padStart(5, "0")}.png`;
+    await new Promise((res, rej) => {
+      video.onloadedmetadata = () => res();
+      video.onerror = () => rej(new Error("Failed to load metadata"));
+    });
 
-      const buf = await ffmpeg.readFile(srcName); // read PNG into memory
-      await ffmpeg.writeFile(destName, buf);      // re-save as sel_XXXXX.png
-    }
+    const stream = video.captureStream();
+    const recorder = new MediaRecorder(stream, { mimeType: "video/webm;codecs=vp9" });
+    const chunks = [];
+    recorder.ondataavailable = (e) => e.data && chunks.push(e.data);
+    const done = new Promise((res) => (recorder.onstop = () => res()));
 
-    // 4. Encode only the selected frames
-    await ffmpeg.exec([
-      "-framerate", String(FPS),
-      "-i", "sel_%05d.png",
-      "-frames:v", String(wantedCount),
-      "-c:v", "libvpx-vp9",
-      "out.webm",
-    ]);
+    // Seek to start
+    await new Promise((res, rej) => {
+      video.onseeked = () => res();
+      video.onerror = () => rej(new Error("Seek failed"));
+      video.currentTime = startSec;
+    });
 
-    const data = await ffmpeg.readFile("out.webm");
-    const blob = new Blob([data.buffer], { type: "video/webm" });
+    recorder.start();
+    video.play();
 
-    // 5. Cleanup
-    try { await ffmpeg.deleteFile("input.webm"); } catch {}
-    try { await ffmpeg.deleteFile("out.webm"); } catch {}
+    // Stop at endSec
+    await new Promise((resolve) => {
+      const tick = () => {
+        if (video.currentTime >= endSec) {
+          video.pause();
+          recorder.stop();
+          resolve();
+        } else {
+          requestAnimationFrame(tick);
+        }
+      };
+      tick();
+    });
 
-    // delete the sel_ images
-    for (let i = 1; i <= wantedCount; i++) {
-      try { await ffmpeg.deleteFile(`sel_${String(i).padStart(5, "0")}.png`); } catch {}
-    }
+    await done;
+    const blob = new Blob(chunks, { type: "video/webm" });
+
+    wrapper.remove();
+    URL.revokeObjectURL(video.src);
 
     return blob;
   }
@@ -96,8 +100,8 @@ export default function AddSwingForm({
     if (!selectedHitter || !file || startFrame == null || contactFrame == null) return;
 
     try {
-      console.log("Cutting from frame", startFrame, "to", contactFrame);
-      const clipBlob = await cutByFrames(file, startFrame, contactFrame);
+      console.log("Recording from frames:", startFrame, "→", contactFrame);
+      const clipBlob = await recordByFrames(file, startFrame, contactFrame);
 
       const videoKey = `swing_${selectedHitter}_${Date.now()}_${Math.random()
         .toString(36)
