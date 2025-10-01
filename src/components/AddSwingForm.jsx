@@ -1,7 +1,10 @@
 // src/components/AddSwingForm.jsx
 import React, { useState, useRef, useCallback } from "react";
 import VideoTagger from "./VideoTagger";
-import { saveSwingClip, ensureWebmType } from "../utils/dataModel";
+import { saveSwingClip } from "../utils/dataModel";
+import { FFmpeg } from "@ffmpeg/ffmpeg";
+
+const ffmpeg = new FFmpeg({ log: true });
 
 export default function AddSwingForm({
   hitters,
@@ -30,60 +33,35 @@ export default function AddSwingForm({
     setVideoUrl(f ? URL.createObjectURL(f) : null);
   }, []);
 
-  // -------------------------------------------------------------------
-  // Recorder using video.captureStream
-  async function recordSegmentViaVideoStream(srcFile, startSec, endSec) {
-    const mime = "video/webm;codecs=vp9";
-    const video = document.createElement("video");
-    video.muted = true;
-    video.playsInline = true;
-    const wrapper = document.createElement("div");
-    Object.assign(wrapper.style, { position: "fixed", left: "-9999px" });
-    wrapper.appendChild(video);
-    document.body.appendChild(wrapper);
+  async function cutByFrames(srcFile, startFrame, endFrame) {
+    if (!ffmpeg.loaded) {
+      await ffmpeg.load({
+        coreURL: window.location.origin + "/swing-sync-web/ffmpeg/ffmpeg-core.js",
+        wasmURL: window.location.origin + "/swing-sync-web/ffmpeg/ffmpeg-core.wasm",
+        workerURL: window.location.origin + "/swing-sync-web/ffmpeg/ffmpeg-core.worker.js",
+      });
+    }
 
-    const url = URL.createObjectURL(srcFile);
-    video.src = url;
-    await new Promise((res, rej) => {
-      video.onloadedmetadata = () => res();
-      video.onerror = () => rej(new Error("Failed to load metadata"));
-    });
+    // write the input file
+    await ffmpeg.writeFile("input.webm", new Uint8Array(await srcFile.arrayBuffer()));
 
-    const stream = video.captureStream();
-    const recorder = new MediaRecorder(stream, { mimeType: mime });
-    const chunks = [];
-    recorder.ondataavailable = (e) => e.data && chunks.push(e.data);
-    const done = new Promise((res) => (recorder.onstop = () => res()));
+    // cut exactly between frames
+    await ffmpeg.exec([
+      "-i", "input.webm",
+      "-vf", `select='between(n\\,${startFrame}\\,${endFrame})',setpts=N/FRAME_RATE/TB`,
+      "-an",
+      "out.webm"
+    ]);
 
-    await new Promise((res, rej) => {
-      video.onseeked = () => res();
-      video.onerror = () => rej(new Error("Seek failed"));
-      video.currentTime = startSec;
-    });
+    const data = await ffmpeg.readFile("out.webm");
+    const blob = new Blob([data.buffer], { type: "video/webm" });
 
-    recorder.start();
-    video.play();
+    // clean up
+    await ffmpeg.deleteFile("input.webm");
+    await ffmpeg.deleteFile("out.webm");
 
-    await new Promise((resolve) => {
-      let raf = 0;
-      const tick = () => {
-        if (video.currentTime >= endSec) {
-          video.pause();
-          recorder.stop();
-          cancelAnimationFrame(raf);
-          resolve();
-        } else raf = requestAnimationFrame(tick);
-      };
-      raf = requestAnimationFrame(tick);
-    });
-
-    await done;
-    const blob = new Blob(chunks, { type: mime });
-    URL.revokeObjectURL(url);
-    wrapper.remove();
-    return ensureWebmType(blob);
+    return blob;
   }
-  // -------------------------------------------------------------------
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -92,11 +70,8 @@ export default function AddSwingForm({
     if (!selectedHitter || !file || startFrame == null || contactFrame == null) return;
 
     try {
-      // cut exactly between the tagged frames
-      const startSec = startFrame / FPS;
-      const endSec = contactFrame / FPS;
-
-      const clipBlob = await recordSegmentViaVideoStream(file, startSec, endSec);
+      // cut by frames only
+      const clipBlob = await cutByFrames(file, startFrame, contactFrame);
 
       const videoKey = `swing_${selectedHitter}_${Date.now()}_${Math.random()
         .toString(36)
