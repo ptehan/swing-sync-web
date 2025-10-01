@@ -33,6 +33,8 @@ export default function AddSwingForm({
     setVideoUrl(f ? URL.createObjectURL(f) : null);
   }, []);
 
+  // -------------------------------------------------------------------
+  // Cut clip between exact frame indices (inclusive)
   async function cutByFrames(srcFile, startFrame, endFrame) {
     if (!ffmpeg.loaded) {
       await ffmpeg.load({
@@ -42,26 +44,24 @@ export default function AddSwingForm({
       });
     }
 
-    // write the input file
     await ffmpeg.writeFile("input.webm", new Uint8Array(await srcFile.arrayBuffer()));
 
-    // cut exactly between frames
     await ffmpeg.exec([
       "-i", "input.webm",
       "-vf", `select='between(n\\,${startFrame}\\,${endFrame})',setpts=N/FRAME_RATE/TB`,
       "-an",
-      "out.webm"
+      "out.webm",
     ]);
 
     const data = await ffmpeg.readFile("out.webm");
     const blob = new Blob([data.buffer], { type: "video/webm" });
 
-    // clean up
     await ffmpeg.deleteFile("input.webm");
     await ffmpeg.deleteFile("out.webm");
 
     return blob;
   }
+  // -------------------------------------------------------------------
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -70,7 +70,7 @@ export default function AddSwingForm({
     if (!selectedHitter || !file || startFrame == null || contactFrame == null) return;
 
     try {
-      // cut by frames only
+      // cut exactly between the tagged frames
       const clipBlob = await cutByFrames(file, startFrame, contactFrame);
 
       const videoKey = `swing_${selectedHitter}_${Date.now()}_${Math.random()
