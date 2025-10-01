@@ -149,9 +149,9 @@ export default function MatchupSimulator({
       if (!ffmpeg.loaded) {
         setProgress("Loading FFmpeg core...");
         await ffmpeg.load({
-          coreURL: window.location.origin + "/ffmpeg/ffmpeg-core.js",
-          wasmURL: window.location.origin + "/ffmpeg/ffmpeg-core.wasm",
-          workerURL: window.location.origin + "/ffmpeg/ffmpeg-core.worker.js",
+          coreURL: import.meta.env.BASE_URL + "ffmpeg/ffmpeg-core.js",
+          wasmURL: import.meta.env.BASE_URL + "ffmpeg/ffmpeg-core.wasm",
+          workerURL: import.meta.env.BASE_URL + "ffmpeg/ffmpeg-core.worker.js",
         });
       }
 
@@ -173,8 +173,11 @@ export default function MatchupSimulator({
       }
 
       const fps = 30;
+
+      // freeze hitter so contact aligns
       const swingLength = swingFrames - swingStartFrame;
       const freezeFrames = pitchFrames - swingLength;
+
       const yellowStart = pitchFrames - swingLength;
 
       const hitterLabel = formatHitterLabel(
@@ -196,8 +199,8 @@ export default function MatchupSimulator({
         "-i", "swing.webm",
         "-filter_complex",
         `[0:v]fps=${fps},drawbox=0:0:iw:ih:yellow@0.3:t=fill:enable='between(n,${yellowStart},${yellowStart + 2})'[pitcher];` +
-        `[1:v]fps=${fps},select='gte(n\\,${swingStartFrame})',setpts=N/(${fps}*TB)[swingtrim];` +
-        `[1:v]fps=${fps},select='eq(n\\,${swingStartFrame})',setpts=N/(${fps}*TB),loop=${freezeFrames}:1:0[freeze];` +
+        `[1:v]select='gte(n,${swingStartFrame})',setpts=PTS-STARTPTS,fps=${fps}[swingtrim];` +
+        `[1:v]select='eq(n,${swingStartFrame})',setpts=PTS-STARTPTS,fps=${fps},loop=${freezeFrames}:1:0[freeze];` +
         `[freeze][swingtrim]concat=n=2:v=1:a=0[hitter];` +
         `[pitcher][hitter]hstack=inputs=2:shortest=0[v]`,
         "-map", "[v]",
