@@ -34,7 +34,7 @@ export default function AddSwingForm({
   }, []);
 
   // -------------------------------------------------------------------
-  // Frame-exact: extract → slice → re-encode
+  // Frame-exact slice by dumping all frames and re-encoding only desired range
   async function cutByFrames(srcFile, startFrame, endFrame) {
     if (!ffmpeg.loaded) {
       await ffmpeg.load({
@@ -44,22 +44,30 @@ export default function AddSwingForm({
       });
     }
 
+    // 1. Write input
     await ffmpeg.writeFile("input.webm", new Uint8Array(await srcFile.arrayBuffer()));
 
-    // 1. Extract all frames at fixed FPS
+    // 2. Dump ALL frames at fixed fps
     await ffmpeg.exec([
       "-i", "input.webm",
       "-vf", `fps=${FPS}`,
       "frame_%05d.png",
     ]);
 
-    // 2. Re-encode only the selected range
-    const frameCount = endFrame - startFrame + 1;
+    // 3. Copy/rename only the wanted frames into contiguous sequence
+    const wantedCount = endFrame - startFrame + 1;
+    for (let i = 0; i < wantedCount; i++) {
+      const srcName = `frame_${String(startFrame + 1 + i).padStart(5, "0")}.png`;
+      const destName = `sel_${String(i + 1).padStart(5, "0")}.png`;
+      const buf = await ffmpeg.readFile(srcName);
+      await ffmpeg.writeFile(destName, buf);
+    }
+
+    // 4. Encode only selected frames
     await ffmpeg.exec([
       "-framerate", String(FPS),
-      "-start_number", String(startFrame + 1), // extracted frames are 1-based
-      "-i", "frame_%05d.png",
-      "-frames:v", String(frameCount),
+      "-i", "sel_%05d.png",
+      "-frames:v", String(wantedCount),
       "-c:v", "libvpx-vp9",
       "out.webm",
     ]);
@@ -67,13 +75,16 @@ export default function AddSwingForm({
     const data = await ffmpeg.readFile("out.webm");
     const blob = new Blob([data.buffer], { type: "video/webm" });
 
-    // 3. Cleanup (optional but keeps memory low)
+    // 5. Cleanup (frames and temp files)
     try { await ffmpeg.deleteFile("input.webm"); } catch {}
     try { await ffmpeg.deleteFile("out.webm"); } catch {}
-    for (let i = startFrame + 1; i <= endFrame + 1; i++) {
-      const fname = `frame_${String(i).padStart(5, "0")}.png`;
-      try { await ffmpeg.deleteFile(fname); } catch {}
+
+    for (let i = 1; i <= wantedCount; i++) {
+      try { await ffmpeg.deleteFile(`sel_${String(i).padStart(5, "0")}.png`); } catch {}
     }
+
+    // Optional: could also delete all `frame_XXXXX.png` to save space
+    // (if you want, loop from 1 → contactFrame+some buffer)
 
     return blob;
   }
