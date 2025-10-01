@@ -92,27 +92,21 @@ export default function AddSwingForm({
     if (!selectedHitter || !file || startFrame == null || contactFrame == null) return;
 
     try {
-      // cut exactly between the tagged frames
+      // cut exactly between tagged frames
       const startSec = startFrame / FPS;
-      const endSec = (contactFrame + 1) / FPS; // +1 so contact frame is included
+      const endSec = contactFrame / FPS;
 
       const clipBlob = await recordSegmentViaVideoStream(file, startSec, endSec);
-
-      // adjust relative to the new clip (start=0)
-      const adjustedStartFrame = 0;
-      const adjustedContactFrame = contactFrame - startFrame;
-      const swingFrames = adjustedContactFrame - adjustedStartFrame;
-      const swingTime = swingFrames > 0 ? swingFrames / FPS : null;
 
       const videoKey = `swing_${selectedHitter}_${Date.now()}_${Math.random()
         .toString(36)
         .slice(2, 8)}`;
+
       await saveSwingClip(videoKey, clipBlob);
 
       onAddSwing(selectedHitter, {
-        startFrame: adjustedStartFrame,
-        contactFrame: adjustedContactFrame,
-        swingTime,
+        startFrame,
+        contactFrame,
         videoKey,
         description: description.trim(),
         cropBox,
