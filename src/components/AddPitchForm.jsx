@@ -41,9 +41,9 @@ export default function AddPitchForm({
 const basePath = (import.meta.env.BASE_URL || "/") + "swing-sync-web/ffmpeg/";
 
 await ffmpeg.load({
-  coreURL: basePath + "ffmpeg-core.js",
-  wasmURL: basePath + "ffmpeg-core.wasm",
-  workerURL: basePath + "ffmpeg-core.worker.js",
+  coreURL: "/swing-sync-web/ffmpeg/ffmpeg-core.js",
+  wasmURL: "/swing-sync-web/ffmpeg/ffmpeg-core.wasm",
+  workerURL: "/swing-sync-web/ffmpeg/ffmpeg-core.worker.js",
 });
     }
 
