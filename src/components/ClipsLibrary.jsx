@@ -33,20 +33,28 @@ export default function ClipsLibrary({
   const [localSwings, setLocalSwings] = useState(swings);
   const [localPitches, setLocalPitches] = useState(pitches);
   const [localMatchups, setLocalMatchups] = useState(matchups);
-  const [orphanedMatchups, setOrphanedMatchups] = useState([]);
 
   useEffect(() => setLocalSwings(swings), [swings]);
   useEffect(() => setLocalPitches(pitches), [pitches]);
   useEffect(() => setLocalMatchups(matchups), [matchups]);
 
+  // 🔥 auto-delete orphaned matchups
   useEffect(() => {
-    async function loadOrphans() {
+    async function cleanOrphans() {
       const allKeys = await listMatchupClipKeys();
       const liveKeys = new Set(localMatchups.map((m) => m.videoKey));
       const orphans = allKeys.filter((k) => !liveKeys.has(k));
-      setOrphanedMatchups(orphans);
+
+      for (const key of orphans) {
+        try {
+          await deleteMatchupClip(key);
+          console.log("Deleted orphaned matchup:", key);
+        } catch (err) {
+          console.error("Failed to delete orphaned matchup:", key, err);
+        }
+      }
     }
-    loadOrphans();
+    cleanOrphans();
   }, [localMatchups]);
 
   function renderMatchupRow(m, i) {
@@ -303,49 +311,6 @@ export default function ClipsLibrary({
           localMatchups.map((m, i) => renderMatchupRow(m, i))
         )}
       </div>
-
-      {/* Orphaned Matchups (from storage only) */}
-      {orphanedMatchups.length > 0 && (
-        <div>
-          <h3>Orphaned Matchups</h3>
-          {orphanedMatchups.map((key, i) => (
-            <div
-              key={`orphan-${i}`}
-              style={{ display: "flex", alignItems: "center", gap: 8 }}
-            >
-              <span style={{ flex: 1 }}>{key}</span>
-              <button
-                type="button"
-                onClick={async () => {
-                  const blob = await ensureVideoBlob(getMatchupClipBlob(key));
-                  if (!blob) return alert("No clip found.");
-                  requestLoadVideoInTagger(blob, `Orphaned matchup: ${key}`);
-                }}
-              >
-                Preview
-              </button>
-              <button
-                type="button"
-                onClick={async () => {
-                  if (window.confirm("Delete this orphaned matchup?")) {
-                    try {
-                      await deleteMatchupClip(key);
-                      setOrphanedMatchups((prev) =>
-                        prev.filter((k) => k !== key)
-                      );
-                    } catch (err) {
-                      console.error("Delete orphaned matchup failed:", err);
-                      alert("Failed to delete orphaned matchup.");
-                    }
-                  }
-                }}
-              >
-                Delete
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
