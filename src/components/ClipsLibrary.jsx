@@ -303,6 +303,49 @@ export default function ClipsLibrary({
           localMatchups.map((m, i) => renderMatchupRow(m, i))
         )}
       </div>
+
+      {/* Orphaned Matchups (from storage only) */}
+      {orphanedMatchups.length > 0 && (
+        <div>
+          <h3>Orphaned Matchups</h3>
+          {orphanedMatchups.map((key, i) => (
+            <div
+              key={`orphan-${i}`}
+              style={{ display: "flex", alignItems: "center", gap: 8 }}
+            >
+              <span style={{ flex: 1 }}>{key}</span>
+              <button
+                type="button"
+                onClick={async () => {
+                  const blob = await ensureVideoBlob(getMatchupClipBlob(key));
+                  if (!blob) return alert("No clip found.");
+                  requestLoadVideoInTagger(blob, `Orphaned matchup: ${key}`);
+                }}
+              >
+                Preview
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (window.confirm("Delete this orphaned matchup?")) {
+                    try {
+                      await deleteMatchupClip(key);
+                      setOrphanedMatchups((prev) =>
+                        prev.filter((k) => k !== key)
+                      );
+                    } catch (err) {
+                      console.error("Delete orphaned matchup failed:", err);
+                      alert("Failed to delete orphaned matchup.");
+                    }
+                  }
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
