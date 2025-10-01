@@ -34,7 +34,7 @@ export default function AddSwingForm({
   }, []);
 
   // -------------------------------------------------------------------
-  // Cut clip between exact frame indices (inclusive)
+  // Extract frames and re-encode only the tagged range
   async function cutByFrames(srcFile, startFrame, endFrame) {
     if (!ffmpeg.loaded) {
       await ffmpeg.load({
@@ -44,18 +44,36 @@ export default function AddSwingForm({
       });
     }
 
+    // Write the input file
     await ffmpeg.writeFile("input.webm", new Uint8Array(await srcFile.arrayBuffer()));
 
+    // Extract all frames at fixed FPS
     await ffmpeg.exec([
       "-i", "input.webm",
-      "-vf", `select='between(n\\,${startFrame}\\,${endFrame})',setpts=N/FRAME_RATE/TB`,
-      "-an",
-      "out.webm",
+      "-vf", `fps=${FPS}`,
+      "frame_%05d.png"
+    ]);
+
+    const frameCount = endFrame - startFrame + 1;
+
+    // Rebuild from only the tagged frames
+    await ffmpeg.exec([
+      "-framerate", String(FPS),
+      "-start_number", String(startFrame + 1), // frame_%05d is 1-based
+      "-i", "frame_%05d.png",
+      "-frames:v", String(frameCount),
+      "-c:v", "libvpx-vp9",
+      "out.webm"
     ]);
 
     const data = await ffmpeg.readFile("out.webm");
     const blob = new Blob([data.buffer], { type: "video/webm" });
 
+    // Cleanup extracted frames (optional: could skip for speed if space isn’t tight)
+    for (let i = startFrame + 1; i <= endFrame + 1; i++) {
+      const fname = `frame_${String(i).padStart(5, "0")}.png`;
+      try { await ffmpeg.deleteFile(fname); } catch {}
+    }
     await ffmpeg.deleteFile("input.webm");
     await ffmpeg.deleteFile("out.webm");
 
@@ -70,7 +88,6 @@ export default function AddSwingForm({
     if (!selectedHitter || !file || startFrame == null || contactFrame == null) return;
 
     try {
-      // cut exactly between the tagged frames
       const clipBlob = await cutByFrames(file, startFrame, contactFrame);
 
       const videoKey = `swing_${selectedHitter}_${Date.now()}_${Math.random()
