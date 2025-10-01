@@ -92,7 +92,7 @@ export default function AddSwingForm({
     if (!selectedHitter || !file || startFrame == null || contactFrame == null) return;
 
     try {
-      // cut exactly between tagged frames
+      // cut exactly between the tagged frames
       const startSec = startFrame / FPS;
       const endSec = contactFrame / FPS;
 
