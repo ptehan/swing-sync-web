@@ -199,10 +199,9 @@ export default function MatchupSimulator({
         "-i", "swing.webm",
         "-filter_complex",
         `[0:v]fps=${fps},drawbox=0:0:iw:ih:yellow@0.3:t=fill:enable='between(n,${yellowStart},${yellowStart + 2})'[pitcher];` +
-        // trim swing video from start frame
-        `[1:v]trim=start_frame=${swingStartFrame},setpts=PTS-STARTPTS,fps=${fps}[swingtrim];` +
-        // make a freeze clip by grabbing exactly one frame and looping it freezeFrames times
-        `[1:v]trim=start_frame=${swingStartFrame}:end_frame=${swingStartFrame + 1},setpts=PTS-STARTPTS,fps=${fps},loop=${freezeFrames}:1:0[freeze];` +
+        // force exact frame cut
+        `[1:v]select='gte(n,${swingStartFrame})',setpts=PTS-STARTPTS,fps=${fps}[swingtrim];` +
+        `[1:v]select='eq(n,${swingStartFrame})',setpts=PTS-STARTPTS,fps=${fps},loop=${freezeFrames}:1:0[freeze];` +
         `[freeze][swingtrim]concat=n=2:v=1:a=0[hitter];` +
         `[pitcher][hitter]hstack=inputs=2:shortest=0[v]`,
         "-map", "[v]",
