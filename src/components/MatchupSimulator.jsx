@@ -192,29 +192,25 @@ export default function MatchupSimulator({
       );
 
       // --- Side-by-side ---
-// --- Side-by-side ---
-setProgress("Generating side-by-side...");
-await ffmpeg.exec([
-  "-y",
-  "-i", "pitch.webm",
-  "-i", "swing.webm",
-  "-filter_complex",
-  // 1) Pitcher side with yellow flash
-  `[0:v]fps=${fps},drawbox=0:0:iw:ih:yellow@0.3:t=fill:enable='between(n,${yellowStart},${yellowStart + 2})'[pitcher];` +
-  // 2) Freeze exactly one frame before swing start
-  `[1:v]trim=start_frame=${swingStartFrame}:end_frame=${swingStartFrame+1},setpts=PTS-STARTPTS,fps=${fps},loop=${freezeFrames}:1:0[freeze];` +
-  // 3) Full swing playback (no extra trimming — your clip already ends at contact)
-  `[1:v]setpts=PTS-STARTPTS,fps=${fps}[swingplay];` +
-  // 4) Concatenate freeze + swing
-  `[freeze][swingplay]concat=n=2:v=1:a=0[hitter];` +
-  // 5) Stack pitcher and hitter side by side
-  `[pitcher][hitter]hstack=inputs=2:shortest=0[v]`,
-  "-map", "[v]",
-  "-c:v", "libx264",
-  "-preset", "ultrafast",
-  "-crf", "28",
-  "out_side.mp4",
-]);
+      setProgress("Generating side-by-side...");
+      await ffmpeg.exec([
+        "-y",
+        "-i", "pitch.webm",
+        "-i", "swing.webm",
+        "-filter_complex",
+        `[0:v]fps=${fps},drawbox=0:0:iw:ih:yellow@0.3:t=fill:enable='between(n,${yellowStart},${yellowStart + 2})'[pitcher];` +
+        // trim swing video from start frame
+        `[1:v]trim=start_frame=${swingStartFrame},setpts=PTS-STARTPTS,fps=${fps}[swingtrim];` +
+        // make a freeze clip by grabbing exactly one frame and looping it freezeFrames times
+        `[1:v]trim=start_frame=${swingStartFrame}:end_frame=${swingStartFrame + 1},setpts=PTS-STARTPTS,fps=${fps},loop=${freezeFrames}:1:0[freeze];` +
+        `[freeze][swingtrim]concat=n=2:v=1:a=0[hitter];` +
+        `[pitcher][hitter]hstack=inputs=2:shortest=0[v]`,
+        "-map", "[v]",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "28",
+        "out_side.mp4",
+      ]);
 
       const sideData = await ffmpeg.readFile("out_side.mp4");
       const sideBlob = new Blob([sideData.buffer], { type: "video/mp4" });
