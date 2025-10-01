@@ -38,12 +38,12 @@ export default function AddPitchForm({
 
   async function extractFramesWithFFmpeg(srcFile, startFrame, endFrame, FPS) {
     if (!ffmpeg.loaded) {
-const base = import.meta.env.BASE_URL || "/";
 
+console.log("AddPitchForm BASE_URL is:", import.meta.env.BASE_URL);
 await ffmpeg.load({
-  coreURL: base + "ffmpeg/ffmpeg-core.js",
-  wasmURL: base + "ffmpeg/ffmpeg-core.wasm",
-  workerURL: base + "ffmpeg/ffmpeg-core.worker.js",
+  coreURL: import.meta.env.BASE_URL + "ffmpeg/ffmpeg-core.js",
+  wasmURL: import.meta.env.BASE_URL + "ffmpeg/ffmpeg-core.wasm",
+  workerURL: import.meta.env.BASE_URL + "ffmpeg/ffmpeg-core.worker.js",
 });
     }
 
