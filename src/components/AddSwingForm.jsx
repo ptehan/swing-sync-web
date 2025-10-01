@@ -31,7 +31,7 @@ export default function AddSwingForm({
   }, []);
 
   // -------------------------------------------------------------------
-  // Smooth recorder using video.captureStream
+  // Recorder using video.captureStream
   async function recordSegmentViaVideoStream(srcFile, startSec, endSec) {
     const mime = "video/webm;codecs=vp9";
     const video = document.createElement("video");
@@ -92,15 +92,15 @@ export default function AddSwingForm({
     if (!selectedHitter || !file || startFrame == null || contactFrame == null) return;
 
     try {
-      const startClipFrame = Math.max(0, contactFrame * FPS);
-      const startSec = startClipFrame / FPS;
-      const endSec = (contactFrame ) / FPS;
+      // cut exactly between the tagged frames
+      const startSec = startFrame / FPS;
+      const endSec = (contactFrame + 1) / FPS; // +1 so contact frame is included
 
       const clipBlob = await recordSegmentViaVideoStream(file, startSec, endSec);
 
-      const framesInClip = Math.round((endSec - startSec) * FPS);
-      const adjustedStartFrame = startFrame - startClipFrame;
-      const adjustedContactFrame = framesInClip ;
+      // adjust relative to the new clip (start=0)
+      const adjustedStartFrame = 0;
+      const adjustedContactFrame = contactFrame - startFrame;
       const swingFrames = adjustedContactFrame - adjustedStartFrame;
       const swingTime = swingFrames > 0 ? swingFrames / FPS : null;
 
@@ -152,7 +152,7 @@ export default function AddSwingForm({
           source={videoUrl}
           metadata={{ label: `Swing tagging: ${selectedHitter}` }}
           fps={FPS}
-          taggable={true} // ✅ show HUD controls with Set Start / Set Contact
+          taggable={true}
           onTagSwing={({ startFrame: s, contactFrame: c }) => {
             if (Number.isFinite(s)) setStartFrame(s);
             if (Number.isFinite(c)) setContactFrame(c);
