@@ -34,8 +34,8 @@ export default function AddSwingForm({
   }, []);
 
   // -------------------------------------------------------------------
-  // Frame-exact cut using select=between(n,start,end)
-  async function cutByFrames(srcFile, startFrame, endFrame) {
+  // Cut by converting tagged frames → seconds
+  async function cutByFrames(srcFile, startFrame, endFrame, FPS) {
     if (!ffmpeg.loaded) {
       await ffmpeg.load({
         coreURL: window.location.origin + "/swing-sync-web/ffmpeg/ffmpeg-core.js",
@@ -46,10 +46,14 @@ export default function AddSwingForm({
 
     await ffmpeg.writeFile("input.webm", new Uint8Array(await srcFile.arrayBuffer()));
 
-    // keep only frames from startFrame → endFrame
+    const startSec = startFrame / FPS;
+    const endSec = (endFrame + 1) / FPS; // +1 to include contact frame
+
     await ffmpeg.exec([
       "-i", "input.webm",
-      "-vf", `fps=${FPS},select='between(n\\,${startFrame}\\,${endFrame})',setpts=N/FRAME_RATE/TB`,
+      "-ss", String(startSec),
+      "-to", String(endSec),
+      "-c:v", "libvpx-vp9",
       "-an",
       "out.webm",
     ]);
@@ -71,7 +75,7 @@ export default function AddSwingForm({
     if (!selectedHitter || !file || startFrame == null || contactFrame == null) return;
 
     try {
-      const clipBlob = await cutByFrames(file, startFrame, contactFrame);
+      const clipBlob = await cutByFrames(file, startFrame, contactFrame, FPS);
 
       const videoKey = `swing_${selectedHitter}_${Date.now()}_${Math.random()
         .toString(36)
