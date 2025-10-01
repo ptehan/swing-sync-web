@@ -149,9 +149,9 @@ export default function MatchupSimulator({
       if (!ffmpeg.loaded) {
         setProgress("Loading FFmpeg core...");
         await ffmpeg.load({
-          coreURL: window.location.origin + "/ffmpeg/ffmpeg-core.js",
-          wasmURL: window.location.origin + "/ffmpeg/ffmpeg-core.wasm",
-          workerURL: window.location.origin + "/ffmpeg/ffmpeg-core.worker.js",
+          coreURL: window.location.origin + "/swing-sync-web/ffmpeg/ffmpeg-core.js",
+          wasmURL: window.location.origin + "/swing-sync-web/ffmpeg/ffmpeg-core.wasm",
+          workerURL: window.location.origin + "/swing-sync-web/ffmpeg/ffmpeg-core.worker.js",
         });
       }
 
