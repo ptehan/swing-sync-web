@@ -40,10 +40,12 @@ export default function AddPitchForm({
     if (!ffmpeg.loaded) {
 
 console.log("AddPitchForm BASE_URL is:", import.meta.env.BASE_URL);
+const BASE = window.location.origin + "/swing-sync-web/";
+
 await ffmpeg.load({
-  coreURL: import.meta.env.BASE_URL + "ffmpeg/ffmpeg-core.js",
-  wasmURL: import.meta.env.BASE_URL + "ffmpeg/ffmpeg-core.wasm",
-  workerURL: import.meta.env.BASE_URL + "ffmpeg/ffmpeg-core.worker.js",
+  coreURL: BASE + "ffmpeg/ffmpeg-core.js",
+  wasmURL: BASE + "ffmpeg/ffmpeg-core.wasm",
+  workerURL: BASE + "ffmpeg/ffmpeg-core.worker.js",
 });
     }
 
