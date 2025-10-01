@@ -94,7 +94,7 @@ export default function AddSwingForm({
     try {
       const startClipFrame = Math.max(0, contactFrame - 2 * FPS);
       const startSec = startClipFrame / FPS;
-      const endSec = (contactFrame ) / FPS;
+      const endSec = (contactFrame + 3) / FPS;
 
       const clipBlob = await recordSegmentViaVideoStream(file, startSec, endSec);
 
