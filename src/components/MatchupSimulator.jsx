@@ -10,6 +10,9 @@ import { FFmpeg } from "@ffmpeg/ffmpeg";
 
 const ffmpeg = new FFmpeg({ log: true });
 
+// ✅ basePath works locally and on GitHub Pages
+const basePath = (import.meta.env.BASE_URL || "/") + "ffmpeg/";
+
 async function toU8(blob) {
   if (!blob) throw new Error("Null blob passed to toU8");
   const buf = await blob.arrayBuffer();
@@ -155,9 +158,9 @@ export default function MatchupSimulator({
       if (!ffmpeg.loaded) {
         setProgress("Loading FFmpeg core...");
         await ffmpeg.load({
-          coreURL: window.location.origin + "/ffmpeg/ffmpeg-core.js",
-          wasmURL: window.location.origin + "/ffmpeg/ffmpeg-core.wasm",
-          workerURL: window.location.origin + "/ffmpeg/ffmpeg-core.worker.js",
+          coreURL: basePath + "ffmpeg-core.js",
+          wasmURL: basePath + "ffmpeg-core.wasm",
+          workerURL: basePath + "ffmpeg-core.worker.js",
         });
       }
 
@@ -262,9 +265,9 @@ export default function MatchupSimulator({
       if (!ffmpeg.loaded) {
         setProgress("Loading FFmpeg core...");
         await ffmpeg.load({
-          coreURL: window.location.origin + "/ffmpeg/ffmpeg-core.js",
-          wasmURL: window.location.origin + "/ffmpeg/ffmpeg-core.wasm",
-          workerURL: window.location.origin + "/ffmpeg/ffmpeg-core.worker.js",
+          coreURL: basePath + "ffmpeg-core.js",
+          wasmURL: basePath + "ffmpeg-core.wasm",
+          workerURL: basePath + "ffmpeg-core.worker.js",
         });
       }
 
@@ -280,8 +283,7 @@ export default function MatchupSimulator({
       // find swing to know yellowStart
       const swing = swings.filter((s) => s.hitterName === selectedHitter)[selectedSwingIndex];
       const swingStartFrame = swing.startFrame ?? 0;
-      // if you don’t store totalFrames on swing, just approximate
-      const swingLength = 30; // fallback to ~1s swing
+      const swingLength = 30; // fallback ~1s swing
       const yellowStart = pitchFrames - swingLength;
 
       // grab the pitcher frame at yellowStart
@@ -311,7 +313,7 @@ export default function MatchupSimulator({
     <div>
       <h2>Matchup Simulator</h2>
 
-      {/* --- the dropdowns remain unchanged --- */}
+      {/* dropdowns unchanged */}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <select
           value={selectedHitter}
