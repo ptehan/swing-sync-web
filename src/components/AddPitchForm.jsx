@@ -38,7 +38,7 @@ export default function AddPitchForm({
 
   async function extractFramesWithFFmpeg(srcFile, startFrame, endFrame, FPS) {
     if (!ffmpeg.loaded) {
-const basePath = (import.meta.env.BASE_URL || "/") + "/swing-sync-web/ffmpeg/";
+const basePath = (import.meta.env.BASE_URL || "/") + "swing-sync-web/ffmpeg/";
 
 await ffmpeg.load({
   coreURL: basePath + "ffmpeg-core.js",
