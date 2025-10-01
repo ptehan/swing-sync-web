@@ -38,12 +38,12 @@ export default function AddPitchForm({
 
   async function extractFramesWithFFmpeg(srcFile, startFrame, endFrame, FPS) {
     if (!ffmpeg.loaded) {
-const basePath = (import.meta.env.BASE_URL || "/") + "swing-sync-web/ffmpeg/";
+const base = import.meta.env.BASE_URL || "/";
 
 await ffmpeg.load({
-  coreURL: "/swing-sync-web/ffmpeg/ffmpeg-core.js",
-  wasmURL: "/swing-sync-web/ffmpeg/ffmpeg-core.wasm",
-  workerURL: "/swing-sync-web/ffmpeg/ffmpeg-core.worker.js",
+  coreURL: base + "ffmpeg/ffmpeg-core.js",
+  wasmURL: base + "ffmpeg/ffmpeg-core.wasm",
+  workerURL: base + "ffmpeg/ffmpeg-core.worker.js",
 });
     }
 
