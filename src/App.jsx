@@ -19,7 +19,7 @@ import {
   findPitcher,
   deletePitchClip,
   deleteSwingClip,
-  deleteMatchupClip,   // ✅ added
+  deleteMatchupClip,
   getPitchClipBlob,
   getSwingClipBlob,
 } from "./utils/dataModel";
@@ -254,15 +254,8 @@ export default function App() {
         style={{ height: 100, marginBottom: 20 }}
       />
 
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: 12,
-          width: "100%",
-          maxWidth: 320,
-        }}
-      >
+      {/* Menu Container */}
+      <div className="menu-container">
         <button onClick={() => setOpenModal("matchup")}>Matchup Simulator</button>
         <button onClick={() => setOpenModal("swing")}>Add Swing</button>
         <button onClick={() => setOpenModal("pitch")}>Add Pitch</button>
@@ -270,9 +263,16 @@ export default function App() {
         <button onClick={() => setOpenModal("pitchers")}>Pitchers</button>
         <button onClick={() => setOpenModal("teams")}>Teams</button>
         <button onClick={() => setOpenModal("clips")}>Clips Library</button>
-        <button onClick={() => setVideoOpen(true)}>Video Player</button>
+
+        {/* Hidden but still defined */}
+        <button 
+          onClick={() => setVideoOpen(true)} 
+          style={{ display: "none" }}
+        >
+          Video Player
+        </button>
         <button
-          style={{ background: "crimson", color: "white" }}
+          style={{ display: "none", background: "crimson", color: "white" }}
           onClick={() => {
             if (
               window.confirm(

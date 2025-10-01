@@ -27,7 +27,6 @@ function downloadBlob(blob, fileName) {
   URL.revokeObjectURL(url);
 }
 
-// count frames via duration × 30
 async function countFrames(filename) {
   let duration = 0;
   let lastLine = "";
@@ -128,6 +127,13 @@ export default function MatchupSimulator({
       return;
     }
 
+    // ✅ reuse if both blobs exist
+    if (sideBySideBlob && pitcherOnlyBlob) {
+      setProgress("Reusing cached matchup clips.");
+      requestLoadVideoInTagger(sideBySideBlob, "Cached matchup");
+      return;
+    }
+
     const swing = swings.filter((s) => s.hitterName === selectedHitter)[selectedSwingIndex];
     const pitch = pitcherPitches[selectedPitchIndex];
     if (!pitch?.videoKey) {
@@ -173,11 +179,8 @@ export default function MatchupSimulator({
       }
 
       const fps = 30;
-
-      // freeze hitter so contact aligns
       const swingLength = swingFrames - swingStartFrame;
       const freezeFrames = pitchFrames - swingLength;
-
       const yellowStart = pitchFrames - swingLength;
 
       const hitterLabel = formatHitterLabel(
@@ -199,9 +202,7 @@ export default function MatchupSimulator({
         "-i", "swing.webm",
         "-filter_complex",
         `[0:v]fps=${fps},drawbox=0:0:iw:ih:yellow@0.3:t=fill:enable='between(n,${yellowStart},${yellowStart + 2})'[pitcher];` +
-        // trim swing video from start frame
         `[1:v]trim=start_frame=${swingStartFrame},setpts=PTS-STARTPTS,fps=${fps}[swingtrim];` +
-        // make a freeze clip by grabbing exactly one frame and looping it freezeFrames times
         `[1:v]trim=start_frame=${swingStartFrame}:end_frame=${swingStartFrame + 1},setpts=PTS-STARTPTS,fps=${fps},loop=${freezeFrames}:1:0[freeze];` +
         `[freeze][swingtrim]concat=n=2:v=1:a=0[hitter];` +
         `[pitcher][hitter]hstack=inputs=2:shortest=0[v]`,
@@ -216,19 +217,6 @@ export default function MatchupSimulator({
       const sideBlob = new Blob([sideData.buffer], { type: "video/mp4" });
       setSideBySideBlob(sideBlob);
       await saveMatchupClip(`${matchupKey}_sideBySide`, sideBlob);
-
-      setMatchups((prev) => [
-        ...prev,
-        {
-          hitterName: selectedHitter,
-          swingIndex: selectedSwingIndex,
-          pitcherName: selectedPitcher,
-          pitchIndex: selectedPitchIndex,
-          videoKey: `${matchupKey}_sideBySide`,
-          labelType: "Side-by-Side",
-          createdAt: Date.now(),
-        },
-      ]);
 
       requestLoadVideoInTagger(sideBlob, `${hitterLabel} vs ${pitcherLabel}`);
 
@@ -250,19 +238,6 @@ export default function MatchupSimulator({
       setPitcherOnlyBlob(pitcherBlob);
       await saveMatchupClip(`${matchupKey}_pitcherOnly`, pitcherBlob);
 
-      setMatchups((prev) => [
-        ...prev,
-        {
-          hitterName: selectedHitter,
-          swingIndex: selectedSwingIndex,
-          pitcherName: selectedPitcher,
-          pitchIndex: selectedPitchIndex,
-          videoKey: `${matchupKey}_pitcherOnly`,
-          labelType: "Pitcher-Only",
-          createdAt: Date.now(),
-        },
-      ]);
-
       setProgress("Done!");
     } catch (err) {
       console.error("FFmpeg error:", err);
@@ -278,9 +253,65 @@ export default function MatchupSimulator({
     }
   }
 
+  async function exportPitcherFrame() {
+    if (!matchupKey) {
+      setError("No matchup selected.");
+      return;
+    }
+    try {
+      if (!ffmpeg.loaded) {
+        setProgress("Loading FFmpeg core...");
+        await ffmpeg.load({
+          coreURL: window.location.origin + "/ffmpeg/ffmpeg-core.js",
+          wasmURL: window.location.origin + "/ffmpeg/ffmpeg-core.wasm",
+          workerURL: window.location.origin + "/ffmpeg/ffmpeg-core.worker.js",
+        });
+      }
+
+      const pitch = pitcherPitches[selectedPitchIndex];
+      if (!pitch?.videoKey) return setError("Missing pitch data.");
+
+      const pitchBlob = await getPitchClipBlob(pitch.videoKey);
+      await ffmpeg.writeFile("pitch.webm", await toU8(pitchBlob));
+
+      // count pitch frames
+      const pitchFrames = await countFrames("pitch.webm");
+
+      // find swing to know yellowStart
+      const swing = swings.filter((s) => s.hitterName === selectedHitter)[selectedSwingIndex];
+      const swingStartFrame = swing.startFrame ?? 0;
+      // if you don’t store totalFrames on swing, just approximate
+      const swingLength = 30; // fallback to ~1s swing
+      const yellowStart = pitchFrames - swingLength;
+
+      // grab the pitcher frame at yellowStart
+      await ffmpeg.exec([
+        "-y",
+        "-i", "pitch.webm",
+        "-vf", `select='eq(n,${yellowStart})'`,
+        "-vframes", "1",
+        "frame.png",
+      ]);
+
+      const pngData = await ffmpeg.readFile("frame.png");
+      const pngBlob = new Blob([pngData.buffer], { type: "image/png" });
+      downloadBlob(pngBlob, `${matchupKey}_pitcherFrame.png`);
+
+      try {
+        await ffmpeg.deleteFile("pitch.webm");
+        await ffmpeg.deleteFile("frame.png");
+      } catch {}
+    } catch (err) {
+      console.error(err);
+      setError("Failed to export pitcher frame.");
+    }
+  }
+
   return (
     <div>
       <h2>Matchup Simulator</h2>
+
+      {/* --- the dropdowns remain unchanged --- */}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <select
           value={selectedHitter}
@@ -342,6 +373,7 @@ export default function MatchupSimulator({
         </select>
       </div>
 
+      {/* buttons */}
       <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
         <button onClick={generateMatchupClips} disabled={busy}>
           Generate Matchup
@@ -369,6 +401,9 @@ export default function MatchupSimulator({
           disabled={!pitcherOnlyBlob}
         >
           Export Pitcher-Only
+        </button>
+        <button onClick={exportPitcherFrame} disabled={!pitcherOnlyBlob}>
+          Export Pitcher Frame
         </button>
       </div>
 

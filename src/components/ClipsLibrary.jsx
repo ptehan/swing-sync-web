@@ -30,7 +30,6 @@ export default function ClipsLibrary({
   onDeletePitch,
   onDeleteMatchup,
 }) {
-  // local state mirrors props so we can update UI instantly on delete
   const [localSwings, setLocalSwings] = useState(swings);
   const [localPitches, setLocalPitches] = useState(pitches);
   const [localMatchups, setLocalMatchups] = useState(matchups);
@@ -153,6 +152,7 @@ export default function ClipsLibrary({
                       >
                         <span style={{ flex: 1 }}>
                           Swing {i + 1} • {s.videoKey ? "saved" : "no clip"}
+                          {s.description ? ` — ${s.description}` : ""}
                         </span>
                         {s.videoKey && (
                           <button
@@ -234,6 +234,7 @@ export default function ClipsLibrary({
                       >
                         <span style={{ flex: 1 }}>
                           Pitch {i + 1} • {pt.videoKey ? "saved" : "no clip"}
+                          {pt.description ? ` — ${pt.description}` : ""}
                         </span>
                         {pt.videoKey && (
                           <button

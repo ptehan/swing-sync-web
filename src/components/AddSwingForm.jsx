@@ -17,8 +17,9 @@ export default function AddSwingForm({
   const [description, setDescription] = useState("");
   const [startFrame, setStartFrame] = useState(null);
   const [contactFrame, setContactFrame] = useState(null);
-  const [cropBox, setCropBox] = useState(null);
+  const [cropBox, setCropBox] = useState(null); // ✅ crop state
   const [error, setError] = useState("");
+
   const fileInputRef = useRef(null);
 
   const onChangeFile = useCallback((e) => {
@@ -30,8 +31,6 @@ export default function AddSwingForm({
     setVideoUrl(f ? URL.createObjectURL(f) : null);
   }, []);
 
-  // -------------------------------------------------------------------
-  // Smooth recorder using video.captureStream
   async function recordSegmentViaVideoStream(srcFile, startSec, endSec) {
     const mime = "video/webm;codecs=vp9";
     const video = document.createElement("video");
@@ -83,7 +82,6 @@ export default function AddSwingForm({
     wrapper.remove();
     return ensureWebmType(blob);
   }
-  // -------------------------------------------------------------------
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -94,7 +92,7 @@ export default function AddSwingForm({
     try {
       const startClipFrame = Math.max(0, contactFrame - 2 * FPS);
       const startSec = startClipFrame / FPS;
-      const endSec = (contactFrame + 3) / FPS;
+      const endSec = (contactFrame ) / FPS;
 
       const clipBlob = await recordSegmentViaVideoStream(file, startSec, endSec);
 
@@ -115,7 +113,7 @@ export default function AddSwingForm({
         swingTime,
         videoKey,
         description: description.trim(),
-        cropBox,
+        cropBox, // ✅ save crop info
       });
 
       alert("Swing saved!");
@@ -151,8 +149,8 @@ export default function AddSwingForm({
         <VideoTagger
           source={videoUrl}
           metadata={{ label: `Swing tagging: ${selectedHitter}` }}
-          fps={FPS}
-          taggable={true} // ✅ show HUD controls with Set Start / Set Contact
+          enableCrop={true} // ✅ crop tool visible
+          onCropChange={(box) => setCropBox(box)} // ✅ capture crop box
           onTagSwing={({ startFrame: s, contactFrame: c }) => {
             if (Number.isFinite(s)) setStartFrame(s);
             if (Number.isFinite(c)) setContactFrame(c);

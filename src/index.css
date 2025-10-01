@@ -1,71 +1,82 @@
-body {
+/* index.css */
+
+/* Reset */
+* {
+  box-sizing: border-box;
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-  background: #f5f6fa;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  width: 100%;
+  font-family: Arial, sans-serif;
+  background-color: #f9f9f9;
   color: #222;
 }
 
-button {
-  background: #007bff;
-  border: none;
-  color: #fff;
-  padding: 8px 14px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 14px;
-}
-button:hover {
-  background: #0069d9;
-}
-button:disabled {
-  background: #aaa;
-  cursor: not-allowed;
-}
-
-input, select {
-  padding: 8px;
-  font-size: 14px;
-  border: 1px solid #ccc;
-  border-radius: 6px;
-  width: 100%;
-  box-sizing: border-box;
-  background: #fff;
-}
-
-.section-panel {
-  border-radius: 10px;
-  margin-bottom: 1rem;
-  background: #fff;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.08);
-  overflow: hidden;
-}
-
-.section-header {
+/* App container (everything stacked vertically) */
+.app-container {
   display: flex;
-  justify-content: space-between;
+  flex-direction: column;   /* vertical stack everywhere */
   align-items: center;
-  background: #007bff;
+  justify-content: flex-start;
+  gap: 16px;                /* space between sections */
+  padding: 16px;
+  width: 100%;
+  max-width: 900px;         /* keeps it from looking too wide on desktops */
+  margin: 0 auto;
+}
+
+/* Logo at the top */
+.app-container img {
+  max-width: 100%;
+  height: auto;
+  margin-bottom: 12px;
+}
+
+/* Menu buttons stacked vertically */
+.menu-container {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  gap: 12px;
+}
+
+.menu-container button {
+  padding: 12px;
+  font-size: 1rem;
+  font-weight: bold;
+  border: none;
+  border-radius: 6px;
+  background: #333;
   color: #fff;
-  padding: 0.75rem 1rem;
   cursor: pointer;
+  transition: background 0.2s ease;
 }
 
-.section-header strong {
-  font-size: 16px;
+.menu-container button:hover {
+  background: #555;
 }
 
-.section-body {
-  padding: 1rem;
+/* Modal styles (if you’re using them globally) */
+.modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0,0,0,0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-/* 📱 Mobile responsiveness */
-@media (max-width: 700px) {
-  .left-panel {
-    flex: 1 1 100%;
-    max-width: 100%;
-    border-right: none;
-  }
-  .right-panel {
-    display: none; /* hide video on very small devices */
-  }
+.modal-content {
+  background: #fff;
+  padding: 20px;
+  border-radius: 10px;
+  max-width: 95%;
+  max-height: 90%;
+  overflow-y: auto;
 }
