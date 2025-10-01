@@ -38,11 +38,13 @@ export default function AddPitchForm({
 
   async function extractFramesWithFFmpeg(srcFile, startFrame, endFrame, FPS) {
     if (!ffmpeg.loaded) {
-      await ffmpeg.load({
-        coreURL: window.location.origin + "/ffmpeg/ffmpeg-core.js",
-        wasmURL: window.location.origin + "/ffmpeg/ffmpeg-core.wasm",
-        workerURL: window.location.origin + "/ffmpeg/ffmpeg-core.worker.js",
-      });
+const basePath = (import.meta.env.BASE_URL || "/") + "ffmpeg/";
+
+await ffmpeg.load({
+  coreURL: basePath + "ffmpeg-core.js",
+  wasmURL: basePath + "ffmpeg-core.wasm",
+  workerURL: basePath + "ffmpeg-core.worker.js",
+});
     }
 
     await ffmpeg.writeFile("input.webm", await toU8(srcFile));

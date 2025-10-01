@@ -157,11 +157,13 @@ export default function MatchupSimulator({
     try {
       if (!ffmpeg.loaded) {
         setProgress("Loading FFmpeg core...");
-        await ffmpeg.load({
-          coreURL: basePath + "ffmpeg-core.js",
-          wasmURL: basePath + "ffmpeg-core.wasm",
-          workerURL: basePath + "ffmpeg-core.worker.js",
-        });
+const basePath = (import.meta.env.BASE_URL || "/") + "ffmpeg/";
+
+await ffmpeg.load({
+  coreURL: basePath + "ffmpeg-core.js",
+  wasmURL: basePath + "ffmpeg-core.wasm",
+  workerURL: basePath + "ffmpeg-core.worker.js",
+});
       }
 
       ffmpeg.on("log", ({ message }) => {
