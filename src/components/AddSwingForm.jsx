@@ -2,6 +2,9 @@
 import React, { useState, useRef, useCallback } from "react";
 import VideoTagger from "./VideoTagger";
 import { saveSwingClip } from "../utils/dataModel";
+import { FFmpeg } from "@ffmpeg/ffmpeg";
+
+const ffmpeg = new FFmpeg({ log: true });
 
 export default function AddSwingForm({
   hitters,
@@ -31,17 +34,16 @@ export default function AddSwingForm({
   }, []);
 
   // -------------------------------------------------------------------
-  // Record exact segment via captureStream
+  // Record exact segment via captureStream (browser-native)
   async function recordByFrames(srcFile, startFrame, endFrame) {
     const startSec = startFrame / FPS;
-    const endSec = (endFrame + 1) / FPS; // +1 ensures contact frame is included
+    const endSec = (endFrame + 1) / FPS;
 
     const video = document.createElement("video");
     video.src = URL.createObjectURL(srcFile);
     video.muted = true;
     video.playsInline = true;
 
-    // hide offscreen
     const wrapper = document.createElement("div");
     wrapper.style.position = "fixed";
     wrapper.style.left = "-9999px";
@@ -59,7 +61,6 @@ export default function AddSwingForm({
     recorder.ondataavailable = (e) => e.data && chunks.push(e.data);
     const done = new Promise((res) => (recorder.onstop = () => res()));
 
-    // Seek to start
     await new Promise((res, rej) => {
       video.onseeked = () => res();
       video.onerror = () => rej(new Error("Seek failed"));
@@ -69,7 +70,6 @@ export default function AddSwingForm({
     recorder.start();
     video.play();
 
-    // Stop at endSec
     await new Promise((resolve) => {
       const tick = () => {
         if (video.currentTime >= endSec) {
@@ -100,8 +100,15 @@ export default function AddSwingForm({
     if (!selectedHitter || !file || startFrame == null || contactFrame == null) return;
 
     try {
-      console.log("Recording from frames:", startFrame, "→", contactFrame);
+      console.log("Recording new clip:", startFrame, "→", contactFrame);
+
+      // Force fresh clip
       const clipBlob = await recordByFrames(file, startFrame, contactFrame);
+
+      // ✅ Preview to prove it's new
+      const previewUrl = URL.createObjectURL(clipBlob);
+      console.log("Preview URL:", previewUrl);
+      window.open(previewUrl, "_blank"); // opens clip in new tab
 
       const videoKey = `swing_${selectedHitter}_${Date.now()}_${Math.random()
         .toString(36)
