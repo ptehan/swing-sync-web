@@ -1,3 +1,4 @@
+// src/components/AddSwingForm.jsx
 import React, { useState, useRef, useCallback } from "react";
 import VideoTagger from "./VideoTagger";
 import { saveSwingClip } from "../utils/dataModel";
@@ -33,27 +34,23 @@ export default function AddSwingForm({
   }, []);
 
   // -------------------------------------------------------------------
-  // Record exact segment via captureStream, fresh video element each time
+  // Record clip from exact tagged startFrame → contactFrame
   async function recordByFrames(srcFile, startFrame, endFrame) {
     const startSec = startFrame / FPS;
-    const endSec = (endFrame + 1) / FPS;
+    const endSec = (endFrame + 1) / FPS; // +1 so the contact frame is included
 
-    // ✅ Create a brand-new <video> element each run
     const video = document.createElement("video");
-    // Force unique blob URL every run
     const uniqueUrl = URL.createObjectURL(srcFile);
     video.src = uniqueUrl;
     video.muted = true;
     video.playsInline = true;
 
-    // Hide offscreen
     const wrapper = document.createElement("div");
     wrapper.style.position = "fixed";
     wrapper.style.left = "-9999px";
     wrapper.appendChild(video);
     document.body.appendChild(wrapper);
 
-    // Wait for metadata
     await new Promise((res, rej) => {
       video.onloadedmetadata = () => res();
       video.onerror = () => rej(new Error("Failed to load metadata"));
@@ -65,7 +62,7 @@ export default function AddSwingForm({
     recorder.ondataavailable = (e) => e.data && chunks.push(e.data);
     const done = new Promise((res) => (recorder.onstop = () => res()));
 
-    // Seek to start frame
+    // Seek to start
     await new Promise((res, rej) => {
       video.onseeked = () => res();
       video.onerror = () => rej(new Error("Seek failed"));
@@ -75,7 +72,7 @@ export default function AddSwingForm({
     recorder.start();
     video.play();
 
-    // Stop at end frame
+    // Stop at endSec
     await new Promise((resolve) => {
       const tick = () => {
         if (video.currentTime >= endSec) {
@@ -92,7 +89,6 @@ export default function AddSwingForm({
     await done;
     const blob = new Blob(chunks, { type: "video/webm" });
 
-    // Cleanup
     wrapper.remove();
     URL.revokeObjectURL(uniqueUrl);
 
@@ -107,28 +103,39 @@ export default function AddSwingForm({
     if (!selectedHitter || !file || startFrame == null || contactFrame == null) return;
 
     try {
-      console.log("Recording new clip:", startFrame, "→", contactFrame);
+      console.log("Recording clip from frames:", startFrame, "→", contactFrame);
 
       const clipBlob = await recordByFrames(file, startFrame, contactFrame);
 
-      // ✅ Always fresh preview
-      const newPreviewUrl = URL.createObjectURL(clipBlob);
-      setPreviewUrl(newPreviewUrl);
+      const adjustedStartFrame = 0; // because we start the clip at tagged start
+      const adjustedContactFrame = contactFrame - startFrame;
+      const swingFrames = contactFrame - startFrame;
+      const swingTime = swingFrames > 0 ? swingFrames / FPS : null;
 
-      // Generate unique key so storage never reuses
       const videoKey = `swing_${selectedHitter}_${Date.now()}_${Math.random()
         .toString(36)
         .slice(2, 8)}`;
 
-      await saveSwingClip(videoKey, clipBlob);
+      await saveSwingClip(
+        videoKey,
+        clipBlob,
+        selectedHitter,
+        description.trim(),
+        adjustedStartFrame,
+        adjustedContactFrame
+      );
 
       onAddSwing(selectedHitter, {
-        startFrame,
-        contactFrame,
+        startFrame: adjustedStartFrame,
+        contactFrame: adjustedContactFrame,
+        swingTime,
         videoKey,
         description: description.trim(),
         cropBox,
       });
+
+      const newPreviewUrl = URL.createObjectURL(clipBlob);
+      setPreviewUrl(newPreviewUrl);
 
       alert("Swing saved!");
       if (onClose) onClose();
@@ -187,7 +194,7 @@ export default function AddSwingForm({
         type="submit"
         disabled={!selectedHitter || !file || startFrame == null || contactFrame == null}
       >
-        Record Swing
+        Save Swing
       </button>
 
       {previewUrl && (
