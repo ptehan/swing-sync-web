@@ -57,10 +57,25 @@ function openDB() {
 /* =====================================================================================
    PITCH CLIP API
    ===================================================================================== */
-export async function savePitchClip(videoKey, blob, description = "", contactFrame = null) {
+/* =====================================================================================
+   PITCH CLIP API
+   ===================================================================================== */
+export async function savePitchClip(
+  videoKey,
+  blob,
+  description = "",
+  contactFrame = null
+) {
+  // 🔒 normalize
+  if (!(blob instanceof Blob) || !blob.type || !blob.type.startsWith("video/")) {
+    blob = new Blob([blob], { type: "video/webm" });
+  }
+
   const db = await openDB();
   const bytes = await blob.arrayBuffer();
-  const type = blob.type && blob.type.startsWith("video/") ? blob.type : "video/webm";
+  const type =
+    blob.type && blob.type.startsWith("video/") ? blob.type : "video/webm";
+
   await new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_PITCH_CLIPS, "readwrite");
     tx.objectStore(STORE_PITCH_CLIPS).put({
@@ -127,10 +142,26 @@ export async function listPitchClipKeys() {
 /* =====================================================================================
    SWING CLIP API
    ===================================================================================== */
-export async function saveSwingClip(videoKey, blob, hitterName, description = "", startFrame = null, contactFrame = null) {
+export async function saveSwingClip(
+  videoKey,
+  blob,
+  hitterName,
+  description = "",
+  startFrame = null,
+  contactFrame = null
+) {
+  // 🔒 normalize to a real Blob with a video/webm type
+  if (!(blob instanceof Blob) || !blob.type) {
+    blob = new Blob([blob], { type: "video/webm" });
+  } else if (!blob.type.startsWith("video/")) {
+    blob = new Blob([blob], { type: "video/webm" });
+  }
+
   const db = await openDB();
   const bytes = await blob.arrayBuffer();
-  const type = blob.type && blob.type.startsWith("video/") ? blob.type : "video/webm";
+  const type =
+    blob.type && blob.type.startsWith("video/") ? blob.type : "video/webm";
+
   await new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_SWING_CLIPS, "readwrite");
     tx.objectStore(STORE_SWING_CLIPS).put({
@@ -201,9 +232,16 @@ export async function listSwingClipKeys() {
    MATCHUP CLIP API
    ===================================================================================== */
 export async function saveMatchupClip(videoKey, blob) {
+  // 🔒 normalize
+  if (!(blob instanceof Blob) || !blob.type || !blob.type.startsWith("video/")) {
+    blob = new Blob([blob], { type: "video/webm" });
+  }
+
   const db = await openDB();
   const bytes = await blob.arrayBuffer();
-  const type = blob.type && blob.type.startsWith("video/") ? blob.type : "video/webm";
+  const type =
+    blob.type && blob.type.startsWith("video/") ? blob.type : "video/webm";
+
   await new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_MATCHUP_CLIPS, "readwrite");
     tx.objectStore(STORE_MATCHUP_CLIPS).put({
