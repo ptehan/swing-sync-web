@@ -2,17 +2,10 @@
 import React, { useState, useRef, useCallback } from "react";
 import VideoTagger from "./VideoTagger";
 import { saveSwingClip } from "../utils/dataModel";
+import * as ffmpeg from "@ffmpeg/ffmpeg";
 
-// lazy ffmpeg
-let ffmpegInstance = null;
-async function getFFmpeg() {
-  if (!ffmpegInstance) {
-    const { createFFmpeg, fetchFile } = await import("@ffmpeg/ffmpeg");
-    ffmpegInstance = createFFmpeg({ log: true });
-    ffmpegInstance.fetchFile = fetchFile;
-  }
-  return ffmpegInstance;
-}
+const { createFFmpeg, fetchFile } = ffmpeg;
+const ffmpegInstance = createFFmpeg({ log: true });
 
 export default function AddSwingForm({
   hitters,
@@ -45,33 +38,26 @@ export default function AddSwingForm({
     setPreviewUrl(null);
   }, []);
 
-  // ------------------------------------------------------------
-  // ffmpeg precise cut with re-encode
+  // --- ffmpeg frame-accurate cut ---
   async function cutClipFFmpeg(srcFile, startFrame, endFrame) {
-    const ffmpeg = await getFFmpeg();
-    if (!ffmpeg.isLoaded()) {
-      await ffmpeg.load();
+    if (!ffmpegInstance.isLoaded()) {
+      await ffmpegInstance.load();
     }
 
-    const startSec = startFrame / FPS;
-    const endSec = (endFrame + 1) / FPS; // include contact
+    ffmpegInstance.FS("writeFile", "input.mp4", await fetchFile(srcFile));
 
-    ffmpeg.FS("writeFile", "input.mp4", await ffmpeg.fetchFile(srcFile));
-
-    await ffmpeg.run(
+    await ffmpegInstance.run(
       "-i", "input.mp4",
-      "-ss", startSec.toString(),
-      "-to", endSec.toString(),
-      "-c:v", "libx264",   // ✅ re-encode for frame accuracy
+      "-vf", `select='between(n,${startFrame},${endFrame})',setpts=PTS-STARTPTS`,
+      "-c:v", "libx264",
       "-preset", "veryfast",
       "-an",
       "output.mp4"
     );
 
-    const data = ffmpeg.FS("readFile", "output.mp4");
+    const data = ffmpegInstance.FS("readFile", "output.mp4");
     return new Blob([data.buffer], { type: "video/mp4" });
   }
-  // ------------------------------------------------------------
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -81,14 +67,12 @@ export default function AddSwingForm({
 
     try {
       setLoading(true);
-      console.log("Cutting clip:", startFrame, "→", contactFrame);
+      console.log("Cutting exact frames:", startFrame, "→", contactFrame);
 
       const clipBlob = await cutClipFFmpeg(file, startFrame, contactFrame);
 
-      const adjustedStartFrame = 0;
-      const adjustedContactFrame = contactFrame - startFrame;
-      const swingFrames = contactFrame - startFrame;
-      const swingTime = swingFrames > 0 ? swingFrames / FPS : null;
+      const newPreviewUrl = URL.createObjectURL(clipBlob);
+      setPreviewUrl(newPreviewUrl);
 
       const videoKey = `swing_${selectedHitter}_${Date.now()}_${Math.random()
         .toString(36)
@@ -99,27 +83,23 @@ export default function AddSwingForm({
         clipBlob,
         selectedHitter,
         description.trim(),
-        adjustedStartFrame,
-        adjustedContactFrame
+        startFrame,
+        contactFrame
       );
 
       onAddSwing(selectedHitter, {
-        startFrame: adjustedStartFrame,
-        contactFrame: adjustedContactFrame,
-        swingTime,
+        startFrame,
+        contactFrame,
         videoKey,
         description: description.trim(),
         cropBox,
       });
 
-      const newPreviewUrl = URL.createObjectURL(clipBlob);
-      setPreviewUrl(newPreviewUrl);
-
       alert("Swing saved!");
       if (onClose) onClose();
     } catch (err) {
       console.error("[AddSwingForm] ffmpeg cut failed:", err);
-      setError(err.message || "Failed to cut swing with ffmpeg.");
+      setError(err.message || "Failed to save swing.");
     } finally {
       setLoading(false);
     }
@@ -174,13 +154,13 @@ export default function AddSwingForm({
         type="submit"
         disabled={!selectedHitter || !file || startFrame == null || contactFrame == null || loading}
       >
-        {loading ? "Saving..." : "Save Swing"}
+        {loading ? "Processing..." : "Save Swing"}
       </button>
 
       {previewUrl && (
         <div>
-          <h4>Preview of saved clip:</h4>
-          <video src={previewUrl} controls autoPlay></video>
+          <h4>Preview of recorded clip:</h4>
+          <video src={previewUrl} controls></video>
         </div>
       )}
 
