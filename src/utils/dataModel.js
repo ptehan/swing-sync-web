@@ -8,7 +8,7 @@
 
 /* ===== Constants ===== */
 export const DB_NAME = "SwingSyncDB_v2";
-export const DB_VERSION = 2; // bump version for new store
+export const DB_VERSION = 3; // bumped version for swing metadata
 
 export const STORE_PITCH_CLIPS = "pitchClips";
 export const STORE_SWING_CLIPS = "swingClips";
@@ -57,7 +57,7 @@ function openDB() {
 /* =====================================================================================
    PITCH CLIP API
    ===================================================================================== */
-export async function savePitchClip(videoKey, blob) {
+export async function savePitchClip(videoKey, blob, description = "", contactFrame = null) {
   const db = await openDB();
   const bytes = await blob.arrayBuffer();
   const type = blob.type && blob.type.startsWith("video/") ? blob.type : "video/webm";
@@ -68,6 +68,8 @@ export async function savePitchClip(videoKey, blob) {
       blob,
       bytes,
       type,
+      description,
+      contactFrame,
       createdAt: Date.now(),
     });
     tx.oncomplete = resolve;
@@ -108,11 +110,11 @@ export async function listPitchClipKeys() {
   const keys = await new Promise((resolve, reject) => {
     const out = [];
     const tx = db.transaction(STORE_PITCH_CLIPS, "readonly");
-    const req = tx.objectStore(STORE_PITCH_CLIPS).openKeyCursor();
+    const req = tx.objectStore(STORE_PITCH_CLIPS).openCursor();
     req.onsuccess = (e) => {
       const cur = e.target.result;
       if (cur) {
-        out.push(cur.key);
+        out.push({ key: cur.key, description: cur.value.description });
         cur.continue();
       } else resolve(out);
     };
@@ -125,7 +127,7 @@ export async function listPitchClipKeys() {
 /* =====================================================================================
    SWING CLIP API
    ===================================================================================== */
-export async function saveSwingClip(videoKey, blob) {
+export async function saveSwingClip(videoKey, blob, hitterName, description = "", startFrame = null, contactFrame = null) {
   const db = await openDB();
   const bytes = await blob.arrayBuffer();
   const type = blob.type && blob.type.startsWith("video/") ? blob.type : "video/webm";
@@ -136,6 +138,10 @@ export async function saveSwingClip(videoKey, blob) {
       blob,
       bytes,
       type,
+      hitterName,
+      description,
+      startFrame,
+      contactFrame,
       createdAt: Date.now(),
     });
     tx.oncomplete = resolve;
@@ -173,21 +179,22 @@ export async function deleteSwingClip(videoKey) {
 
 export async function listSwingClipKeys() {
   const db = await openDB();
-  const keys = await new Promise((resolve, reject) => {
+  const swings = await new Promise((resolve, reject) => {
     const out = [];
     const tx = db.transaction(STORE_SWING_CLIPS, "readonly");
-    const req = tx.objectStore(STORE_SWING_CLIPS).openKeyCursor();
+    const req = tx.objectStore(STORE_SWING_CLIPS).openCursor();
     req.onsuccess = (e) => {
       const cur = e.target.result;
       if (cur) {
-        out.push(cur.key);
+        const { hitterName, description, startFrame, contactFrame } = cur.value || {};
+        out.push({ key: cur.key, hitterName, description, startFrame, contactFrame });
         cur.continue();
       } else resolve(out);
     };
     req.onerror = () => reject(req.error);
   });
   db.close();
-  return keys;
+  return swings;
 }
 
 /* =====================================================================================
@@ -273,12 +280,7 @@ export function deleteSwing(hitter, index) {
 }
 
 export function createPitcher(name, description = "", teamName = "") {
-  return { 
-    name, 
-    description, 
-    teamName, 
-    pitches: [] 
-  };
+  return { name, description, teamName, pitches: [] };
 }
 
 export function addPitch(pitcher, pitch) {
@@ -297,7 +299,6 @@ export function findPitcher(pitchers, name) {
 }
 
 export async function deleteAllClips() {
-  // clear indexedDB stores
   const db = await openDB();
   await Promise.all(
     Array.from(db.objectStoreNames).map(
@@ -312,7 +313,6 @@ export async function deleteAllClips() {
   );
   db.close();
 
-  // clear matchup blobs from localStorage
   Object.keys(localStorage)
     .filter((k) => k.startsWith("matchupClip_"))
     .forEach((k) => localStorage.removeItem(k));

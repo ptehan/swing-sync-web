@@ -7,6 +7,7 @@ import {
   deleteMatchupClip,
   deletePitchClip,
   listMatchupClipKeys,
+  listSwingClipKeys,
 } from "../utils/dataModel";
 
 // helper: guarantee the return value is a Blob with a video type
@@ -56,6 +57,22 @@ export default function ClipsLibrary({
     }
     cleanOrphans();
   }, [localMatchups]);
+
+  // 🔥 Load swings from IndexedDB with metadata
+  useEffect(() => {
+    async function loadSwingsFromDB() {
+      const swings = await listSwingClipKeys();
+      const swingsWithKeys = swings.map((s, idx) => ({
+        videoKey: s.key,
+        hitterName: s.hitterName,
+        description: s.description || `Swing ${idx + 1}`,
+        startFrame: s.startFrame,
+        contactFrame: s.contactFrame,
+      }));
+      setLocalSwings(swingsWithKeys);
+    }
+    loadSwingsFromDB();
+  }, []);
 
   function renderMatchupRow(m, i) {
     const swingObj = localSwings.find(
@@ -135,8 +152,8 @@ export default function ClipsLibrary({
         ) : (
           hitters.map((h) => {
             const swingsFor = localSwings
-              .map((s, idx) => ({ ...s, globalIndex: idx }))
-              .filter((s) => s.hitterName === h.name);
+              .filter((s) => s.hitterName === h.name)
+              .map((s, idx) => ({ ...s, globalIndex: idx }));
 
             const matchupsFor = localMatchups
               .map((m, idx) => ({ ...m, globalIndex: idx }))
@@ -270,7 +287,10 @@ export default function ClipsLibrary({
                                   await deletePitchClip(pt.videoKey);
                                 }
                                 setLocalPitches((prev) =>
-                                  prev.filter((_, idx) => !(pt.pitcherName === p.name && idx === i))
+                                  prev.filter(
+                                    (_, idx) =>
+                                      !(pt.pitcherName === p.name && idx === i)
+                                  )
                                 );
                                 onDeletePitch(p.name, i);
                               } catch (err) {
