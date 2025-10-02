@@ -1,6 +1,13 @@
+// src/components/AddSwingForm.jsx
 import React, { useState, useRef, useCallback } from "react";
 import VideoTagger from "./VideoTagger";
 import { saveSwingClip } from "../utils/dataModel";
+import * as ffmpegModule from "@ffmpeg/ffmpeg";
+
+const { createFFmpeg, fetchFile } = ffmpegModule;
+
+// singleton ffmpeg instance
+const ffmpeg = createFFmpeg({ log: true });
 
 export default function AddSwingForm({
   hitters,
@@ -16,7 +23,6 @@ export default function AddSwingForm({
   const [description, setDescription] = useState("");
   const [startFrame, setStartFrame] = useState(null);
   const [contactFrame, setContactFrame] = useState(null);
-  const [cropBox, setCropBox] = useState(null);
   const [error, setError] = useState("");
   const [previewUrl, setPreviewUrl] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -28,59 +34,34 @@ export default function AddSwingForm({
     setFile(f);
     setStartFrame(null);
     setContactFrame(null);
-    setCropBox(null);
     setVideoUrl(f ? URL.createObjectURL(f) : null);
     setPreviewUrl(null);
   }, []);
 
-  // --- Canvas frame-by-frame re-encode ---
-  async function cutClipCanvas(srcFile, startFrame, endFrame, fps) {
-    const video = document.createElement("video");
-    video.src = URL.createObjectURL(srcFile);
-    video.muted = true;
-    video.playsInline = true;
-
-    // wait for metadata
-    await new Promise((res, rej) => {
-      video.onloadedmetadata = () => res();
-      video.onerror = (e) => rej(e);
-    });
-
-    const width = video.videoWidth;
-    const height = video.videoHeight;
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext("2d");
-
-    // capture stream from canvas
-    const stream = canvas.captureStream(fps);
-    const recorder = new MediaRecorder(stream, { mimeType: "video/webm" });
-    const chunks = [];
-    recorder.ondataavailable = (e) => e.data && chunks.push(e.data);
-    const done = new Promise((res) => (recorder.onstop = () => res()));
-    recorder.start();
-
-    // step through frames
-    for (let f = startFrame; f <= endFrame; f++) {
-      const t = f / fps;
-      await new Promise((resolve, reject) => {
-        video.currentTime = t;
-        video.onseeked = () => {
-          ctx.drawImage(video, 0, 0, width, height);
-          resolve();
-        };
-        video.onerror = reject;
-      });
-      // wait one frame interval so MediaRecorder captures it
-      await new Promise((r) => setTimeout(r, 1000 / fps));
+  // --- Trim video with ffmpeg.wasm ---
+  async function trimWithFFmpeg(srcFile, startFrame, endFrame) {
+    if (!ffmpeg.isLoaded()) {
+      await ffmpeg.load();
     }
 
-    recorder.stop();
-    await done;
+    // write input file
+    ffmpeg.FS("writeFile", "input.mp4", await fetchFile(srcFile));
 
-    URL.revokeObjectURL(video.src);
-    return new Blob(chunks, { type: "video/webm" });
+    const startSec = startFrame / FPS;
+    const endSec = endFrame / FPS;
+
+    // run ffmpeg to cut exactly
+    await ffmpeg.run(
+      "-i", "input.mp4",
+      "-ss", startSec.toString(),
+      "-to", endSec.toString(),
+      "-c:v", "libx264",   // re-encode for accuracy
+      "-preset", "ultrafast",
+      "output.mp4"
+    );
+
+    const data = ffmpeg.FS("readFile", "output.mp4");
+    return new Blob([data.buffer], { type: "video/mp4" });
   }
 
   const handleSubmit = async (e) => {
@@ -91,9 +72,9 @@ export default function AddSwingForm({
 
     try {
       setLoading(true);
-      console.log("Canvas re-encode:", startFrame, "→", contactFrame);
+      console.log("FFmpeg trimming:", startFrame, "→", contactFrame);
 
-      const clipBlob = await cutClipCanvas(file, startFrame, contactFrame, FPS);
+      const clipBlob = await trimWithFFmpeg(file, startFrame, contactFrame);
 
       const newPreviewUrl = URL.createObjectURL(clipBlob);
       setPreviewUrl(newPreviewUrl);
@@ -116,14 +97,14 @@ export default function AddSwingForm({
         contactFrame,
         videoKey,
         description: description.trim(),
-        cropBox,
+        cropBox: null,
       });
 
       alert("Swing saved!");
       if (onClose) onClose();
     } catch (err) {
-      console.error("[AddSwingForm] canvas cut failed:", err);
-      setError(err.message || "Failed to save swing.");
+      console.error("[AddSwingForm] ffmpeg failed:", err);
+      setError(err.message || "Failed to trim swing.");
     } finally {
       setLoading(false);
     }
@@ -183,8 +164,8 @@ export default function AddSwingForm({
 
       {previewUrl && (
         <div>
-          <h4>Preview of recorded clip:</h4>
-          <video src={previewUrl} controls></video>
+          <h4>Preview of trimmed clip:</h4>
+          <video src={previewUrl} controls autoPlay></video>
         </div>
       )}
 
