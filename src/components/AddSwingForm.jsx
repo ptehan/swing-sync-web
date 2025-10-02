@@ -38,25 +38,22 @@ export default function AddSwingForm({
     setPreviewUrl(null);
   }, []);
 
-  // --- Trim video with ffmpeg.wasm ---
+  // --- Frame-accurate re-encode with ffmpeg.wasm ---
   async function trimWithFFmpeg(srcFile, startFrame, endFrame) {
     if (!ffmpeg.isLoaded()) {
       await ffmpeg.load();
     }
 
-    // write input file
+    // write file to ffmpeg FS
     ffmpeg.FS("writeFile", "input.mp4", await fetchFile(srcFile));
 
-    const startSec = startFrame / FPS;
-    const endSec = endFrame / FPS;
-
-    // run ffmpeg to cut exactly
+    // run ffmpeg with select filter
     await ffmpeg.run(
       "-i", "input.mp4",
-      "-ss", startSec.toString(),
-      "-to", endSec.toString(),
-      "-c:v", "libx264",   // re-encode for accuracy
+      "-vf", `select='between(n,${startFrame},${endFrame})',setpts=PTS-STARTPTS`,
+      "-c:v", "libx264",
       "-preset", "ultrafast",
+      "-crf", "18",
       "output.mp4"
     );
 
@@ -72,7 +69,7 @@ export default function AddSwingForm({
 
     try {
       setLoading(true);
-      console.log("FFmpeg trimming:", startFrame, "→", contactFrame);
+      console.log("FFmpeg trimming frames:", startFrame, "→", contactFrame);
 
       const clipBlob = await trimWithFFmpeg(file, startFrame, contactFrame);
 
