@@ -3,6 +3,18 @@ import React, { useState, useRef, useCallback } from "react";
 import VideoTagger from "./VideoTagger";
 import { saveSwingClip } from "../utils/dataModel";
 
+// lazy ffmpeg instance
+let ffmpegInstance = null;
+
+async function getFFmpeg() {
+  if (!ffmpegInstance) {
+    const { createFFmpeg, fetchFile } = await import("@ffmpeg/ffmpeg");
+    ffmpegInstance = createFFmpeg({ log: true });
+    ffmpegInstance.fetchFile = fetchFile;
+  }
+  return ffmpegInstance;
+}
+
 export default function AddSwingForm({
   hitters,
   onAddSwing,
@@ -20,6 +32,7 @@ export default function AddSwingForm({
   const [cropBox, setCropBox] = useState(null);
   const [error, setError] = useState("");
   const [previewUrl, setPreviewUrl] = useState(null);
+  const [loading, setLoading] = useState(false);
 
   const fileInputRef = useRef(null);
 
@@ -34,65 +47,31 @@ export default function AddSwingForm({
   }, []);
 
   // -------------------------------------------------------------------
-  // Record clip from exact tagged startFrame → contactFrame
-  async function recordByFrames(srcFile, startFrame, endFrame) {
+  // ffmpeg precise cutting
+  async function cutClipFFmpeg(srcFile, startFrame, endFrame) {
+    const ffmpeg = await getFFmpeg();
+    if (!ffmpeg.isLoaded()) {
+      await ffmpeg.load();
+    }
+
     const startSec = startFrame / FPS;
-    const endSec = (endFrame + 1) / FPS; // +1 so the contact frame is included
+    const endSec = (endFrame + 1) / FPS; // include contact frame
 
-    const video = document.createElement("video");
-    const uniqueUrl = URL.createObjectURL(srcFile);
-    video.src = uniqueUrl;
-    video.muted = true;
-    video.playsInline = true;
+    // load file into ffmpeg FS
+    ffmpeg.FS("writeFile", "input.mp4", await ffmpeg.fetchFile(srcFile));
 
-    const wrapper = document.createElement("div");
-    wrapper.style.position = "fixed";
-    wrapper.style.left = "-9999px";
-    wrapper.appendChild(video);
-    document.body.appendChild(wrapper);
+    // run cut
+    await ffmpeg.run(
+      "-i", "input.mp4",
+      "-ss", startSec.toString(),
+      "-to", endSec.toString(),
+      "-c:v", "libvpx-vp9", // re-encode for frame accuracy
+      "-an",                 // drop audio
+      "output.webm"
+    );
 
-    await new Promise((res, rej) => {
-      video.onloadedmetadata = () => res();
-      video.onerror = () => rej(new Error("Failed to load metadata"));
-    });
-
-    const stream = video.captureStream();
-    const recorder = new MediaRecorder(stream, { mimeType: "video/webm;codecs=vp9" });
-    const chunks = [];
-    recorder.ondataavailable = (e) => e.data && chunks.push(e.data);
-    const done = new Promise((res) => (recorder.onstop = () => res()));
-
-    // Seek to start
-    await new Promise((res, rej) => {
-      video.onseeked = () => res();
-      video.onerror = () => rej(new Error("Seek failed"));
-      video.currentTime = startSec;
-    });
-
-    recorder.start();
-    video.play();
-
-    // Stop at endSec
-    await new Promise((resolve) => {
-      const tick = () => {
-        if (video.currentTime >= endSec) {
-          video.pause();
-          recorder.stop();
-          resolve();
-        } else {
-          requestAnimationFrame(tick);
-        }
-      };
-      tick();
-    });
-
-    await done;
-    const blob = new Blob(chunks, { type: "video/webm" });
-
-    wrapper.remove();
-    URL.revokeObjectURL(uniqueUrl);
-
-    return blob;
+    const data = ffmpeg.FS("readFile", "output.webm");
+    return new Blob([data.buffer], { type: "video/webm" });
   }
   // -------------------------------------------------------------------
 
@@ -103,11 +82,12 @@ export default function AddSwingForm({
     if (!selectedHitter || !file || startFrame == null || contactFrame == null) return;
 
     try {
-      console.log("Recording clip from frames:", startFrame, "→", contactFrame);
+      setLoading(true);
+      console.log("Cutting new clip:", startFrame, "→", contactFrame);
 
-      const clipBlob = await recordByFrames(file, startFrame, contactFrame);
+      const clipBlob = await cutClipFFmpeg(file, startFrame, contactFrame);
 
-      const adjustedStartFrame = 0; // because we start the clip at tagged start
+      const adjustedStartFrame = 0; // clip starts at tagged start
       const adjustedContactFrame = contactFrame - startFrame;
       const swingFrames = contactFrame - startFrame;
       const swingTime = swingFrames > 0 ? swingFrames / FPS : null;
@@ -140,8 +120,10 @@ export default function AddSwingForm({
       alert("Swing saved!");
       if (onClose) onClose();
     } catch (err) {
-      console.error("[AddSwingForm] record failed:", err);
-      setError(err.message || "Failed to record swing.");
+      console.error("[AddSwingForm] ffmpeg cut failed:", err);
+      setError(err.message || "Failed to cut swing with ffmpeg.");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -192,14 +174,14 @@ export default function AddSwingForm({
 
       <button
         type="submit"
-        disabled={!selectedHitter || !file || startFrame == null || contactFrame == null}
+        disabled={!selectedHitter || !file || startFrame == null || contactFrame == null || loading}
       >
-        Save Swing
+        {loading ? "Saving..." : "Save Swing"}
       </button>
 
       {previewUrl && (
         <div>
-          <h4>Preview of recorded clip:</h4>
+          <h4>Preview of saved clip:</h4>
           <video src={previewUrl} controls autoPlay></video>
         </div>
       )}
