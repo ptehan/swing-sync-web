@@ -1,4 +1,3 @@
-// src/components/AddSwingForm.jsx
 import React, { useState, useRef, useCallback } from "react";
 import VideoTagger from "./VideoTagger";
 import { saveSwingClip } from "../utils/dataModel";
@@ -38,19 +37,23 @@ export default function AddSwingForm({
     setPreviewUrl(null);
   }, []);
 
-  // --- ffmpeg frame-accurate cut ---
-  async function cutClipFFmpeg(srcFile, startFrame, endFrame) {
+  // --- ffmpeg re-encode every frame ---
+  async function cutClipFFmpeg(srcFile, startFrame, endFrame, fps) {
     if (!ffmpegInstance.isLoaded()) {
       await ffmpegInstance.load();
     }
 
+    // write input
     ffmpegInstance.FS("writeFile", "input.mp4", await fetchFile(srcFile));
 
+    // re-encode with frame selection
     await ffmpegInstance.run(
       "-i", "input.mp4",
-      "-vf", `select='between(n,${startFrame},${endFrame})',setpts=PTS-STARTPTS`,
-      "-c:v", "libx264",
+      "-vf", `select='between(n,${startFrame},${endFrame})',setpts=PTS-STARTPTS,fps=${fps}`,
+      "-c:v", "libx264",          // re-encode
       "-preset", "veryfast",
+      "-crf", "23",
+      "-pix_fmt", "yuv420p",
       "-an",
       "output.mp4"
     );
@@ -67,9 +70,9 @@ export default function AddSwingForm({
 
     try {
       setLoading(true);
-      console.log("Cutting exact frames:", startFrame, "→", contactFrame);
+      console.log("Re-encoding frames:", startFrame, "→", contactFrame);
 
-      const clipBlob = await cutClipFFmpeg(file, startFrame, contactFrame);
+      const clipBlob = await cutClipFFmpeg(file, startFrame, contactFrame, FPS);
 
       const newPreviewUrl = URL.createObjectURL(clipBlob);
       setPreviewUrl(newPreviewUrl);
