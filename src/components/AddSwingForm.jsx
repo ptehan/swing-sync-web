@@ -24,6 +24,7 @@ export default function AddSwingForm({
   const [error, setError] = useState("");
   const [previewUrl, setPreviewUrl] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [videoFPS, setVideoFPS] = useState(constants.FPS);
 
   const fileInputRef = useRef(null);
 
@@ -34,7 +35,8 @@ export default function AddSwingForm({
     setContactFrame(null);
     setVideoUrl(f ? URL.createObjectURL(f) : null);
     setPreviewUrl(null);
-  }, []);
+    setVideoFPS(constants.FPS); // Reset to default, will update after ffprobe
+  }, [constants.FPS]);
 
   // Get video frame rate using ffprobe
   async function getVideoFrameRate(srcFile) {
@@ -45,46 +47,57 @@ export default function AddSwingForm({
     await ffmpeg.run("-i", "input.mp4", "-f", "null", "-");
     const logs = ffmpeg.FS("readFile", "stderr").toString();
     const frameRateMatch = logs.match(/(\d+\.?\d*) fps/);
-    return frameRateMatch ? parseFloat(frameRateMatch[1]) : constants.FPS;
+    const fps = frameRateMatch ? parseFloat(frameRateMatch[1]) : constants.FPS;
+    console.log(`Detected FPS: ${fps}`);
+    return fps;
   }
 
   // Frame-accurate trimming with FFmpeg
-  async function trimWithFFmpeg(srcFile, startFrame, endFrame) {
+  async function trimWithFFmpeg(srcFile, startFrame, endFrame, fps) {
     if (!ffmpeg.isLoaded()) {
       await ffmpeg.load();
     }
 
     try {
-      // Write file to FFmpeg FS
-      ffmpeg.FS("writeFile", "input.mp4", await fetchFile(srcFile));
+      // Write input file
+      const inputFile = "input.mp4";
+      const intermediateFile = "intermediate.mp4";
+      const outputFile = "output.mp4";
+      ffmpeg.FS("writeFile", inputFile, await fetchFile(srcFile));
 
-      // Get actual frame rate
-      const actualFPS = await getVideoFrameRate(srcFile);
-      const startTime = startFrame / actualFPS;
-      const duration = (endFrame - startFrame + 1) / actualFPS;
-
-      // Run FFmpeg with precise trimming
+      // Step 1: Re-encode to constant frame rate to ensure frame accuracy
       await ffmpeg.run(
-        "-i", "input.mp4",
-        "-ss", startTime.toString(), // Seek to start time
-        "-t", duration.toString(), // Set duration
-        "-force_key_frames", `0:${startTime}`, // Force keyframe at start
+        "-i", inputFile,
         "-c:v", "libx264",
         "-preset", "ultrafast",
         "-crf", "18",
-        "-r", actualFPS.toString(), // Enforce constant frame rate
-        "-an", // Remove audio to simplify
-        "output.mp4"
+        "-r", fps.toString(), // Force constant frame rate
+        "-an", // No audio
+        intermediateFile
       );
 
-      const data = ffmpeg.FS("readFile", "output.mp4");
+      // Step 2: Trim exact frames using select filter
+      await ffmpeg.run(
+        "-i", intermediateFile,
+        "-vf", `select='between(n,${startFrame},${endFrame})',setpts=PTS-STARTPTS`,
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "18",
+        "-r", fps.toString(),
+        "-an",
+        outputFile
+      );
+
+      const data = ffmpeg.FS("readFile", outputFile);
+      console.log(`Trimmed clip: frames ${startFrame} to ${endFrame}, FPS: ${fps}`);
       return new Blob([data.buffer], { type: "video/mp4" });
     } catch (err) {
       throw new Error(`FFmpeg trimming failed: ${err.message}`);
     } finally {
-      // Clean up FFmpeg FS
+      // Clean up
       try {
         ffmpeg.FS("unlink", "input.mp4");
+        ffmpeg.FS("unlink", "intermediate.mp4");
         ffmpeg.FS("unlink", "output.mp4");
       } catch (e) {
         console.warn("Failed to clean up FFmpeg FS:", e);
@@ -108,9 +121,11 @@ export default function AddSwingForm({
 
     try {
       setLoading(true);
-      console.log("Trimming frames:", startFrame, "→", contactFrame);
+      const fps = await getVideoFrameRate(file);
+      setVideoFPS(fps); // Update for VideoTagger consistency
+      console.log(`Processing: frames ${startFrame} to ${contactFrame}, FPS: ${fps}`);
 
-      const clipBlob = await trimWithFFmpeg(file, startFrame, contactFrame);
+      const clipBlob = await trimWithFFmpeg(file, startFrame, contactFrame, fps);
 
       const newPreviewUrl = URL.createObjectURL(clipBlob);
       setPreviewUrl(newPreviewUrl);
@@ -171,18 +186,19 @@ export default function AddSwingForm({
         <VideoTagger
           source={videoUrl}
           metadata={{ label: `Swing tagging: ${selectedHitter}` }}
-          fps={constants.FPS}
+          fps={videoFPS} // Use detected FPS
           taggable={true}
           onTagSwing={({ startFrame: s, contactFrame: c }) => {
             if (Number.isFinite(s)) setStartFrame(s);
             if (Number.isFinite(c)) setContactFrame(c);
+            console.log(`Tagged frames: start=${s}, contact=${c}`);
           }}
         />
       )}
 
       {(startFrame != null || contactFrame != null) && (
         <div>
-          Tagged: start={startFrame ?? "—"}, contact={contactFrame ?? "—"}
+          Tagged: start={startFrame ?? "—"}, contact={contactFrame ?? "—"}, FPS={videoFPS}
         </div>
       )}
 
