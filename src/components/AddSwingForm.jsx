@@ -1,10 +1,6 @@
 import React, { useState, useRef, useCallback } from "react";
 import VideoTagger from "./VideoTagger";
 import { saveSwingClip } from "../utils/dataModel";
-import * as ffmpeg from "@ffmpeg/ffmpeg";
-
-const { createFFmpeg, fetchFile } = ffmpeg;
-const ffmpegInstance = createFFmpeg({ log: true });
 
 export default function AddSwingForm({
   hitters,
@@ -37,29 +33,54 @@ export default function AddSwingForm({
     setPreviewUrl(null);
   }, []);
 
-  // --- ffmpeg re-encode every frame ---
-  async function cutClipFFmpeg(srcFile, startFrame, endFrame, fps) {
-    if (!ffmpegInstance.isLoaded()) {
-      await ffmpegInstance.load();
+  // --- Canvas frame-by-frame re-encode ---
+  async function cutClipCanvas(srcFile, startFrame, endFrame, fps) {
+    const video = document.createElement("video");
+    video.src = URL.createObjectURL(srcFile);
+    video.muted = true;
+    video.playsInline = true;
+
+    // wait for metadata
+    await new Promise((res, rej) => {
+      video.onloadedmetadata = () => res();
+      video.onerror = (e) => rej(e);
+    });
+
+    const width = video.videoWidth;
+    const height = video.videoHeight;
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+
+    // capture stream from canvas
+    const stream = canvas.captureStream(fps);
+    const recorder = new MediaRecorder(stream, { mimeType: "video/webm" });
+    const chunks = [];
+    recorder.ondataavailable = (e) => e.data && chunks.push(e.data);
+    const done = new Promise((res) => (recorder.onstop = () => res()));
+    recorder.start();
+
+    // step through frames
+    for (let f = startFrame; f <= endFrame; f++) {
+      const t = f / fps;
+      await new Promise((resolve, reject) => {
+        video.currentTime = t;
+        video.onseeked = () => {
+          ctx.drawImage(video, 0, 0, width, height);
+          resolve();
+        };
+        video.onerror = reject;
+      });
+      // wait one frame interval so MediaRecorder captures it
+      await new Promise((r) => setTimeout(r, 1000 / fps));
     }
 
-    // write input
-    ffmpegInstance.FS("writeFile", "input.mp4", await fetchFile(srcFile));
+    recorder.stop();
+    await done;
 
-    // re-encode with frame selection
-    await ffmpegInstance.run(
-      "-i", "input.mp4",
-      "-vf", `select='between(n,${startFrame},${endFrame})',setpts=PTS-STARTPTS,fps=${fps}`,
-      "-c:v", "libx264",          // re-encode
-      "-preset", "veryfast",
-      "-crf", "23",
-      "-pix_fmt", "yuv420p",
-      "-an",
-      "output.mp4"
-    );
-
-    const data = ffmpegInstance.FS("readFile", "output.mp4");
-    return new Blob([data.buffer], { type: "video/mp4" });
+    URL.revokeObjectURL(video.src);
+    return new Blob(chunks, { type: "video/webm" });
   }
 
   const handleSubmit = async (e) => {
@@ -70,9 +91,9 @@ export default function AddSwingForm({
 
     try {
       setLoading(true);
-      console.log("Re-encoding frames:", startFrame, "→", contactFrame);
+      console.log("Canvas re-encode:", startFrame, "→", contactFrame);
 
-      const clipBlob = await cutClipFFmpeg(file, startFrame, contactFrame, FPS);
+      const clipBlob = await cutClipCanvas(file, startFrame, contactFrame, FPS);
 
       const newPreviewUrl = URL.createObjectURL(clipBlob);
       setPreviewUrl(newPreviewUrl);
@@ -101,7 +122,7 @@ export default function AddSwingForm({
       alert("Swing saved!");
       if (onClose) onClose();
     } catch (err) {
-      console.error("[AddSwingForm] ffmpeg cut failed:", err);
+      console.error("[AddSwingForm] canvas cut failed:", err);
       setError(err.message || "Failed to save swing.");
     } finally {
       setLoading(false);
