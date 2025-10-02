@@ -3,9 +3,8 @@ import React, { useState, useRef, useCallback } from "react";
 import VideoTagger from "./VideoTagger";
 import { saveSwingClip } from "../utils/dataModel";
 
-// lazy ffmpeg instance
+// lazy ffmpeg
 let ffmpegInstance = null;
-
 async function getFFmpeg() {
   if (!ffmpegInstance) {
     const { createFFmpeg, fetchFile } = await import("@ffmpeg/ffmpeg");
@@ -46,8 +45,8 @@ export default function AddSwingForm({
     setPreviewUrl(null);
   }, []);
 
-  // -------------------------------------------------------------------
-  // ffmpeg precise cutting
+  // ------------------------------------------------------------
+  // ffmpeg precise cut with re-encode
   async function cutClipFFmpeg(srcFile, startFrame, endFrame) {
     const ffmpeg = await getFFmpeg();
     if (!ffmpeg.isLoaded()) {
@@ -55,25 +54,24 @@ export default function AddSwingForm({
     }
 
     const startSec = startFrame / FPS;
-    const endSec = (endFrame + 1) / FPS; // include contact frame
+    const endSec = (endFrame + 1) / FPS; // include contact
 
-    // load file into ffmpeg FS
     ffmpeg.FS("writeFile", "input.mp4", await ffmpeg.fetchFile(srcFile));
 
-    // run cut
     await ffmpeg.run(
       "-i", "input.mp4",
       "-ss", startSec.toString(),
       "-to", endSec.toString(),
-      "-c:v", "libvpx-vp9", // re-encode for frame accuracy
-      "-an",                 // drop audio
-      "output.webm"
+      "-c:v", "libx264",   // ✅ re-encode for frame accuracy
+      "-preset", "veryfast",
+      "-an",
+      "output.mp4"
     );
 
-    const data = ffmpeg.FS("readFile", "output.webm");
-    return new Blob([data.buffer], { type: "video/webm" });
+    const data = ffmpeg.FS("readFile", "output.mp4");
+    return new Blob([data.buffer], { type: "video/mp4" });
   }
-  // -------------------------------------------------------------------
+  // ------------------------------------------------------------
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -83,11 +81,11 @@ export default function AddSwingForm({
 
     try {
       setLoading(true);
-      console.log("Cutting new clip:", startFrame, "→", contactFrame);
+      console.log("Cutting clip:", startFrame, "→", contactFrame);
 
       const clipBlob = await cutClipFFmpeg(file, startFrame, contactFrame);
 
-      const adjustedStartFrame = 0; // clip starts at tagged start
+      const adjustedStartFrame = 0;
       const adjustedContactFrame = contactFrame - startFrame;
       const swingFrames = contactFrame - startFrame;
       const swingTime = swingFrames > 0 ? swingFrames / FPS : null;
