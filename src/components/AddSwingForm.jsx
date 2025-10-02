@@ -1,6 +1,6 @@
-// src/components/AddSwingForm.jsx
 import React, { useState, useRef, useCallback } from "react";
 import VideoTagger from "./VideoTagger";
+import { saveSwingClip } from "../utils/dataModel";
 
 export default function AddSwingForm({
   hitters,
@@ -16,8 +16,10 @@ export default function AddSwingForm({
   const [description, setDescription] = useState("");
   const [startFrame, setStartFrame] = useState(null);
   const [contactFrame, setContactFrame] = useState(null);
+  const [cropBox, setCropBox] = useState(null);
   const [error, setError] = useState("");
-  const [previewUrl, setPreviewUrl] = useState(null); // 👈 immediate preview
+  const [previewUrl, setPreviewUrl] = useState(null);
+
   const fileInputRef = useRef(null);
 
   const onChangeFile = useCallback((e) => {
@@ -25,25 +27,33 @@ export default function AddSwingForm({
     setFile(f);
     setStartFrame(null);
     setContactFrame(null);
+    setCropBox(null);
     setVideoUrl(f ? URL.createObjectURL(f) : null);
     setPreviewUrl(null);
   }, []);
 
+  // -------------------------------------------------------------------
+  // Record exact segment via captureStream, fresh video element each time
   async function recordByFrames(srcFile, startFrame, endFrame) {
     const startSec = startFrame / FPS;
     const endSec = (endFrame + 1) / FPS;
 
+    // ✅ Create a brand-new <video> element each run
     const video = document.createElement("video");
-    video.src = URL.createObjectURL(srcFile);
+    // Force unique blob URL every run
+    const uniqueUrl = URL.createObjectURL(srcFile);
+    video.src = uniqueUrl;
     video.muted = true;
     video.playsInline = true;
 
+    // Hide offscreen
     const wrapper = document.createElement("div");
     wrapper.style.position = "fixed";
     wrapper.style.left = "-9999px";
     wrapper.appendChild(video);
     document.body.appendChild(wrapper);
 
+    // Wait for metadata
     await new Promise((res, rej) => {
       video.onloadedmetadata = () => res();
       video.onerror = () => rej(new Error("Failed to load metadata"));
@@ -55,6 +65,7 @@ export default function AddSwingForm({
     recorder.ondataavailable = (e) => e.data && chunks.push(e.data);
     const done = new Promise((res) => (recorder.onstop = () => res()));
 
+    // Seek to start frame
     await new Promise((res, rej) => {
       video.onseeked = () => res();
       video.onerror = () => rej(new Error("Seek failed"));
@@ -64,6 +75,7 @@ export default function AddSwingForm({
     recorder.start();
     video.play();
 
+    // Stop at end frame
     await new Promise((resolve) => {
       const tick = () => {
         if (video.currentTime >= endSec) {
@@ -80,11 +92,13 @@ export default function AddSwingForm({
     await done;
     const blob = new Blob(chunks, { type: "video/webm" });
 
+    // Cleanup
     wrapper.remove();
-    URL.revokeObjectURL(video.src);
+    URL.revokeObjectURL(uniqueUrl);
 
     return blob;
   }
+  // -------------------------------------------------------------------
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -94,21 +108,30 @@ export default function AddSwingForm({
 
     try {
       console.log("Recording new clip:", startFrame, "→", contactFrame);
+
       const clipBlob = await recordByFrames(file, startFrame, contactFrame);
 
-      // 👇 show the clip immediately instead of saving
+      // ✅ Always fresh preview
       const newPreviewUrl = URL.createObjectURL(clipBlob);
       setPreviewUrl(newPreviewUrl);
 
-      // notify parent but skip save for now
+      // Generate unique key so storage never reuses
+      const videoKey = `swing_${selectedHitter}_${Date.now()}_${Math.random()
+        .toString(36)
+        .slice(2, 8)}`;
+
+      await saveSwingClip(videoKey, clipBlob);
+
       onAddSwing(selectedHitter, {
         startFrame,
         contactFrame,
-        videoKey: "temp_preview",
+        videoKey,
         description: description.trim(),
+        cropBox,
       });
 
-      alert("Swing recorded (preview below).");
+      alert("Swing saved!");
+      if (onClose) onClose();
     } catch (err) {
       console.error("[AddSwingForm] record failed:", err);
       setError(err.message || "Failed to record swing.");
@@ -169,7 +192,7 @@ export default function AddSwingForm({
 
       {previewUrl && (
         <div>
-          <h4>Preview of saved clip:</h4>
+          <h4>Preview of recorded clip:</h4>
           <video src={previewUrl} controls autoPlay></video>
         </div>
       )}
