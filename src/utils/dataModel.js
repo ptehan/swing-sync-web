@@ -357,3 +357,15 @@ export async function deleteAllClips() {
 
   console.log("✅ All clips deleted (pitches, swings, matchups)");
 }
+
+export async function deleteAllSwingClips() {
+  const db = await openDB();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_SWING_CLIPS, "readwrite");
+    tx.objectStore(STORE_SWING_CLIPS).clear();
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+  console.log("✅ All swing clips deleted");
+}
