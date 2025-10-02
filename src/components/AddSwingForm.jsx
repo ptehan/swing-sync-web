@@ -1,10 +1,6 @@
 // src/components/AddSwingForm.jsx
 import React, { useState, useRef, useCallback } from "react";
 import VideoTagger from "./VideoTagger";
-import { saveSwingClip } from "../utils/dataModel";
-import { FFmpeg } from "@ffmpeg/ffmpeg";
-
-const ffmpeg = new FFmpeg({ log: true });
 
 export default function AddSwingForm({
   hitters,
@@ -20,8 +16,8 @@ export default function AddSwingForm({
   const [description, setDescription] = useState("");
   const [startFrame, setStartFrame] = useState(null);
   const [contactFrame, setContactFrame] = useState(null);
-  const [cropBox, setCropBox] = useState(null);
   const [error, setError] = useState("");
+  const [previewUrl, setPreviewUrl] = useState(null); // 👈 immediate preview
   const fileInputRef = useRef(null);
 
   const onChangeFile = useCallback((e) => {
@@ -29,12 +25,10 @@ export default function AddSwingForm({
     setFile(f);
     setStartFrame(null);
     setContactFrame(null);
-    setCropBox(null);
     setVideoUrl(f ? URL.createObjectURL(f) : null);
+    setPreviewUrl(null);
   }, []);
 
-  // -------------------------------------------------------------------
-  // Record exact segment via captureStream (browser-native)
   async function recordByFrames(srcFile, startFrame, endFrame) {
     const startSec = startFrame / FPS;
     const endSec = (endFrame + 1) / FPS;
@@ -91,7 +85,6 @@ export default function AddSwingForm({
 
     return blob;
   }
-  // -------------------------------------------------------------------
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -101,34 +94,24 @@ export default function AddSwingForm({
 
     try {
       console.log("Recording new clip:", startFrame, "→", contactFrame);
-
-      // Force fresh clip
       const clipBlob = await recordByFrames(file, startFrame, contactFrame);
 
-      // ✅ Preview to prove it's new
-      const previewUrl = URL.createObjectURL(clipBlob);
-      console.log("Preview URL:", previewUrl);
-      window.open(previewUrl, "_blank"); // opens clip in new tab
+      // 👇 show the clip immediately instead of saving
+      const newPreviewUrl = URL.createObjectURL(clipBlob);
+      setPreviewUrl(newPreviewUrl);
 
-      const videoKey = `swing_${selectedHitter}_${Date.now()}_${Math.random()
-        .toString(36)
-        .slice(2, 8)}`;
-
-      await saveSwingClip(videoKey, clipBlob);
-
+      // notify parent but skip save for now
       onAddSwing(selectedHitter, {
         startFrame,
         contactFrame,
-        videoKey,
+        videoKey: "temp_preview",
         description: description.trim(),
-        cropBox,
       });
 
-      alert("Swing saved!");
-      if (onClose) onClose();
+      alert("Swing recorded (preview below).");
     } catch (err) {
-      console.error("[AddSwingForm] save failed:", err);
-      setError(err.message || "Failed to save swing.");
+      console.error("[AddSwingForm] record failed:", err);
+      setError(err.message || "Failed to record swing.");
     }
   };
 
@@ -169,11 +152,6 @@ export default function AddSwingForm({
       {(startFrame != null || contactFrame != null) && (
         <div>
           Tagged: start={startFrame ?? "—"}, contact={contactFrame ?? "—"}
-          {cropBox && (
-            <div>
-              Crop: x={Math.round(cropBox.x)}, y={Math.round(cropBox.y)}, w={Math.round(cropBox.w)}, h={Math.round(cropBox.h)}
-            </div>
-          )}
         </div>
       )}
 
@@ -186,8 +164,15 @@ export default function AddSwingForm({
         type="submit"
         disabled={!selectedHitter || !file || startFrame == null || contactFrame == null}
       >
-        Save Swing
+        Record Swing
       </button>
+
+      {previewUrl && (
+        <div>
+          <h4>Preview of saved clip:</h4>
+          <video src={previewUrl} controls autoPlay></video>
+        </div>
+      )}
 
       {error && <div style={{ color: "crimson" }}>{error}</div>}
     </form>
