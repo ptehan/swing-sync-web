@@ -23,6 +23,9 @@ export default function AddSwingForm({
   const [contactFrame, setContactFrame] = useState(null);
   const [startTime, setStartTime] = useState(null);
   const [contactTime, setContactTime] = useState(null);
+  const [frameOffset, setFrameOffset] = useState(0);
+  const [firstFrameUrl, setFirstFrameUrl] = useState(null); // New: for debugging
+  const [lastFrameUrl, setLastFrameUrl] = useState(null); // New: for debugging
   const [error, setError] = useState("");
   const [previewUrl, setPreviewUrl] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -31,7 +34,7 @@ export default function AddSwingForm({
 
   const fileInputRef = useRef(null);
 
-  // Fetch video metadata when file changes
+  // Fetch video metadata and preprocess video
   const onChangeFile = useCallback(async (e) => {
     const f = e.target.files?.[0] || null;
     setFile(f);
@@ -41,6 +44,8 @@ export default function AddSwingForm({
     setContactTime(null);
     setVideoUrl(f ? URL.createObjectURL(f) : null);
     setPreviewUrl(null);
+    setFirstFrameUrl(null);
+    setLastFrameUrl(null);
     setVideoFPS(constants.FPS);
     setVideoFrameCount(null);
 
@@ -49,8 +54,12 @@ export default function AddSwingForm({
         const { fps, frameCount } = await getVideoMetadata(f);
         setVideoFPS(fps);
         setVideoFrameCount(frameCount);
+        // Preprocess video to ensure constant frame rate
+        const preprocessedFile = await preprocessVideo(f, fps);
+        setFile(preprocessedFile);
+        setVideoUrl(URL.createObjectURL(preprocessedFile));
       } catch (err) {
-        setError(`Failed to load video metadata: ${err.message}`);
+        setError(`Failed to process video: ${err.message}`);
       }
     }
   }, [constants.FPS]);
@@ -71,7 +80,37 @@ export default function AddSwingForm({
     return { fps, frameCount };
   }
 
-  // Frame-accurate trimming by extracting individual frames
+  // Preprocess video to enforce constant frame rate
+  async function preprocessVideo(srcFile, fps) {
+    if (!ffmpeg.isLoaded()) {
+      await ffmpeg.load();
+    }
+    try {
+      ffmpeg.FS("writeFile", "input.mp4", await fetchFile(srcFile));
+      await ffmpeg.run(
+        "-i", "input.mp4",
+        "-r", fps.toString(),
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "18",
+        "-an",
+        "-pix_fmt", "yuv420p",
+        "preprocessed.mp4"
+      );
+      const data = ffmpeg.FS("readFile", "preprocessed.mp4");
+      console.log(`Preprocessed video to constant ${fps} FPS`);
+      return new Blob([data.buffer], { type: "video/mp4" });
+    } finally {
+      try {
+        ffmpeg.FS("unlink", "input.mp4");
+        ffmpeg.FS("unlink", "preprocessed.mp4");
+      } catch (e) {
+        console.warn("Failed to clean up FFmpeg FS:", e);
+      }
+    }
+  }
+
+  // Frame-accurate trimming with frame extraction
   async function trimWithFFmpeg(srcFile, startFrame, endFrame, fps) {
     if (!ffmpeg.isLoaded()) {
       await ffmpeg.load();
@@ -81,26 +120,38 @@ export default function AddSwingForm({
       const inputFile = "input.mp4";
       ffmpeg.FS("writeFile", inputFile, await fetchFile(srcFile));
 
-      // Extract exact frames as images
+      const adjustedStartFrame = startFrame + frameOffset;
+      const adjustedEndFrame = endFrame + frameOffset;
+      console.log(`Trimming: frames ${adjustedStartFrame} to ${adjustedEndFrame}, FPS=${fps}`);
+
+      // Extract frames
       const frameDir = "frames";
       ffmpeg.FS("mkdir", frameDir);
       await ffmpeg.run(
         "-i", inputFile,
-        "-vf", `select='between(n,${startFrame},${endFrame})',setpts=PTS-STARTPTS`,
+        "-vf", `select='between(n,${adjustedStartFrame},${adjustedEndFrame})',setpts=PTS-STARTPTS`,
         "-vsync", "0",
         `${frameDir}/frame_%04d.png`
       );
 
       // Verify extracted frames
       const frameFiles = ffmpeg.FS("readdir", frameDir).filter(f => f.endsWith(".png"));
-      console.log(`Extracted ${frameFiles.length} frames (expected: ${endFrame - startFrame + 1})`);
+      console.log(`Extracted ${frameFiles.length} frames (expected: ${adjustedEndFrame - adjustedStartFrame + 1})`);
 
       if (frameFiles.length === 0) {
         throw new Error("No frames extracted. Check frame range or video integrity.");
       }
 
-      if (frameFiles.length !== endFrame - startFrame + 1) {
-        console.warn(`Frame count mismatch: got ${frameFiles.length}, expected ${endFrame - startFrame + 1}`);
+      if (frameFiles.length !== adjustedEndFrame - adjustedStartFrame + 1) {
+        console.warn(`Frame count mismatch: got ${frameFiles.length}, expected ${adjustedEndFrame - adjustedStartFrame + 1}`);
+      }
+
+      // Save first and last frames for inspection
+      if (frameFiles.length > 0) {
+        const firstFrameData = ffmpeg.FS("readFile", `${frameDir}/frame_0001.png`);
+        setFirstFrameUrl(URL.createObjectURL(new Blob([firstFrameData.buffer], { type: "image/png" })));
+        const lastFrameData = ffmpeg.FS("readFile", `${frameDir}/frame_${frameFiles.length.toString().padStart(4, "0")}.png`);
+        setLastFrameUrl(URL.createObjectURL(new Blob([lastFrameData.buffer], { type: "image/png" })));
       }
 
       // Re-encode frames into video
@@ -117,14 +168,14 @@ export default function AddSwingForm({
       );
 
       const data = ffmpeg.FS("readFile", outputFile);
-      console.log(`Created clip: frames ${startFrame} to ${endFrame}, FPS: ${fps}, ${frameFiles.length} frames`);
+      console.log(`Created clip: frames ${adjustedStartFrame} to ${adjustedEndFrame}, FPS: ${fps}, ${frameFiles.length} frames`);
       return new Blob([data.buffer], { type: "video/mp4" });
     } catch (err) {
       throw new Error(`FFmpeg processing failed: ${err.message}`);
     } finally {
       try {
-        ffmpeg.FS("unlink", inputFile);
-        ffmpeg.FS("unlink", outputFile);
+        ffmpeg.FS("unlink", "input.mp4");
+        ffmpeg.FS("unlink", "output.mp4");
         const frameDir = "frames";
         if (ffmpeg.FS("readdir", frameDir)) {
           ffmpeg.FS("readdir", frameDir).forEach(f => {
@@ -152,14 +203,14 @@ export default function AddSwingForm({
       return;
     }
 
-    if (videoFrameCount && (startFrame >= videoFrameCount || contactFrame >= videoFrameCount)) {
-      setError(`Frame range (${startFrame}-${contactFrame}) exceeds video length (${videoFrameCount} frames).`);
+    if (videoFrameCount && (startFrame + frameOffset >= videoFrameCount || contactFrame + frameOffset >= videoFrameCount)) {
+      setError(`Adjusted frame range (${startFrame + frameOffset}-${contactFrame + frameOffset}) exceeds video length (${videoFrameCount} frames).`);
       return;
     }
 
     try {
       setLoading(true);
-      console.log(`Processing: startFrame=${startFrame} (${(startFrame / videoFPS).toFixed(3)}s), contactFrame=${contactFrame} (${(contactFrame / videoFPS).toFixed(3)}s), FPS=${videoFPS}`);
+      console.log(`Processing: startFrame=${startFrame} (${(startFrame / videoFPS).toFixed(3)}s), contactFrame=${contactFrame} (${(contactFrame / videoFPS).toFixed(3)}s), offset=${frameOffset}, FPS=${videoFPS}`);
 
       const clipBlob = await trimWithFFmpeg(file, startFrame, contactFrame, videoFPS);
 
@@ -240,11 +291,13 @@ export default function AddSwingForm({
 
       {(startFrame != null || contactFrame != null) && (
         <div>
-          Tagged: start={startFrame ?? "—"} ({startTime ? startTime.toFixed(3) : "—"}s), contact={contactFrame ?? "—"} ({contactTime ? contactTime.toFixed(3) : "—"}s), FPS={videoFPS}, Total Frames={videoFrameCount ?? "—"}
+          Tagged: start={startFrame ?? "—"} ({startTime ? startTime.toFixed(3) : "—"}s), 
+          contact={contactFrame ?? "—"} ({contactTime ? contactTime.toFixed(3) : "—"}s), 
+          FPS={videoFPS}, Total Frames={videoFrameCount ?? "—"}
         </div>
       )}
 
-      {/* Manual frame input as fallback */}
+      {/* Manual inputs for debugging */}
       <div style={{ display: "grid", gap: "8px" }}>
         <label>
           Manual Start Frame:
@@ -276,6 +329,14 @@ export default function AddSwingForm({
             }}
           />
         </label>
+        <label>
+          Frame Offset (adjust if clip is early/late):
+          <input
+            type="number"
+            value={frameOffset}
+            onChange={(e) => setFrameOffset(parseInt(e.target.value, 10) || 0)}
+          />
+        </label>
       </div>
 
       <label>
@@ -294,6 +355,26 @@ export default function AddSwingForm({
         <div>
           <h4>Preview of trimmed clip:</h4>
           <video src={previewUrl} controls autoPlay></video>
+        </div>
+      )}
+
+      {(firstFrameUrl || lastFrameUrl) && (
+        <div>
+          <h4>Debug Frames:</h4>
+          {firstFrameUrl && (
+            <div>
+              <p>First Frame (f{startFrame + frameOffset}):</p>
+              <img src={firstFrameUrl} alt="First frame" style={{ maxWidth: "200px" }} />
+              <a href={firstFrameUrl} download="first_frame.png">Download</a>
+            </div>
+          )}
+          {lastFrameUrl && (
+            <div>
+              <p>Last Frame (f{contactFrame + frameOffset}):</p>
+              <img src={lastFrameUrl} alt="Last frame" style={{ maxWidth: "200px" }} />
+              <a href={lastFrameUrl} download="last_frame.png">Download</a>
+            </div>
+          )}
         </div>
       )}
 

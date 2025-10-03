@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from "react"
 const DEFAULT_FPS = 30;
 
 function timeToFrame(t, fps) {
-  return Math.floor(t * fps); // Use floor to avoid rounding up too early
+  return Math.floor(t * fps); // Use floor for consistent frame alignment
 }
 
 function getTagMode(labelRaw) {
@@ -60,7 +60,7 @@ export default function VideoTagger({
 
   const frame = useMemo(() => timeToFrame(presentedTime, fps), [presentedTime, fps]);
 
-  // Update presentedTime on video timeupdate
+  // Precise frame stepping using requestVideoFrameCallback
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -69,8 +69,19 @@ export default function VideoTagger({
       setPresentedTime(v.currentTime);
     };
 
+    let rafId;
+    const updateFrame = () => {
+      setPresentedTime(v.currentTime);
+      if (!v.paused) rafId = v.requestVideoFrameCallback?.(updateFrame);
+    };
+
     v.addEventListener("timeupdate", handleTimeUpdate);
-    return () => v.removeEventListener("timeupdate", handleTimeUpdate);
+    if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(updateFrame);
+
+    return () => {
+      v.removeEventListener("timeupdate", handleTimeUpdate);
+      if (rafId) v.cancelVideoFrameCallback?.(rafId);
+    };
   }, []);
 
   const togglePlay = useCallback(async () => {
@@ -95,8 +106,9 @@ export default function VideoTagger({
       if (!v) return;
       v.pause();
       setIsPlaying(false);
-      const newTime = v.currentTime + delta / fps;
-      v.currentTime = Math.max(0, newTime);
+      const frameTime = 1 / fps;
+      const newTime = v.currentTime + delta * frameTime;
+      v.currentTime = Math.max(0, Math.min(v.duration, newTime));
       setPresentedTime(v.currentTime);
     },
     [fps]
