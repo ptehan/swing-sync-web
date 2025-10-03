@@ -4,8 +4,9 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from "react"
 const DEFAULT_FPS = 30;
 
 function timeToFrame(t, fps) {
-  return Math.round(t * fps);
+  return Math.floor(t * fps); // Use floor to avoid rounding up too early
 }
+
 function getTagMode(labelRaw) {
   const label = (labelRaw || "").toLowerCase();
   if (label.startsWith("matchup:")) return "matchup";
@@ -45,10 +46,9 @@ export default function VideoTagger({
   fps = DEFAULT_FPS,
   onTagSwing,
   onTagPitchContact,
-  taggable = false, // NEW PROP
+  taggable = false,
 }) {
   const videoRef = useRef(null);
-
   const [presentedTime, setPresentedTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [err, setErr] = useState("");
@@ -56,15 +56,22 @@ export default function VideoTagger({
 
   const infoLabel = (metadata?.label || "").trim();
   const tagMode = useMemo(() => getTagMode(infoLabel), [infoLabel]);
-  const isMatchupPlayback = tagMode === "matchup";
-
-  // now driven by explicit prop, not auto-detect
   const showHudOverlay = taggable;
 
-  const frame = useMemo(
-    () => timeToFrame(presentedTime, fps),
-    [presentedTime, fps]
-  );
+  const frame = useMemo(() => timeToFrame(presentedTime, fps), [presentedTime, fps]);
+
+  // Update presentedTime on video timeupdate
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+
+    const handleTimeUpdate = () => {
+      setPresentedTime(v.currentTime);
+    };
+
+    v.addEventListener("timeupdate", handleTimeUpdate);
+    return () => v.removeEventListener("timeupdate", handleTimeUpdate);
+  }, []);
 
   const togglePlay = useCallback(async () => {
     const v = videoRef.current;
@@ -88,7 +95,7 @@ export default function VideoTagger({
       if (!v) return;
       v.pause();
       setIsPlaying(false);
-      const newTime = (v.currentTime || 0) + delta / fps;
+      const newTime = v.currentTime + delta / fps;
       v.currentTime = Math.max(0, newTime);
       setPresentedTime(v.currentTime);
     },
@@ -96,19 +103,24 @@ export default function VideoTagger({
   );
 
   const tagPitchContact = useCallback(() => {
-    const f = timeToFrame(videoRef.current?.currentTime ?? presentedTime, fps);
-    setStatus(`Pitch contact @ f${f}`);
+    const time = videoRef.current?.currentTime ?? presentedTime;
+    const f = timeToFrame(time, fps);
+    setStatus(`Pitch contact @ f${f} (${time.toFixed(3)}s)`);
     if (onTagPitchContact) onTagPitchContact(f);
   }, [fps, presentedTime, onTagPitchContact]);
 
   const tagSwingStart = useCallback(() => {
-    const f = timeToFrame(videoRef.current?.currentTime ?? presentedTime, fps);
-    if (onTagSwing) onTagSwing({ startFrame: f, contactFrame: null });
+    const time = videoRef.current?.currentTime ?? presentedTime;
+    const f = timeToFrame(time, fps);
+    setStatus(`Swing start @ f${f} (${time.toFixed(3)}s)`);
+    if (onTagSwing) onTagSwing({ startFrame: f, contactFrame: null, startTime: time, contactTime: null });
   }, [fps, presentedTime, onTagSwing]);
 
   const tagSwingContact = useCallback(() => {
-    const f = timeToFrame(videoRef.current?.currentTime ?? presentedTime, fps);
-    if (onTagSwing) onTagSwing({ startFrame: null, contactFrame: f });
+    const time = videoRef.current?.currentTime ?? presentedTime;
+    const f = timeToFrame(time, fps);
+    setStatus(`Swing contact @ f${f} (${time.toFixed(3)}s)`);
+    if (onTagSwing) onTagSwing({ startFrame: null, contactFrame: f, startTime: null, contactTime: time });
   }, [fps, presentedTime, onTagSwing]);
 
   return (
@@ -143,7 +155,22 @@ export default function VideoTagger({
                 background: "#000",
               }}
             />
-            {isMatchupPlayback && <FooterBar text={infoLabel} />}
+            {showHudOverlay && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: 10,
+                  left: 10,
+                  background: "rgba(0,0,0,0.7)",
+                  color: "#fff",
+                  padding: "4px 8px",
+                  fontSize: 12,
+                }}
+              >
+                Frame: {frame}, Time: {presentedTime.toFixed(3)}s, FPS: {fps}
+              </div>
+            )}
+            {tagMode === "matchup" && <FooterBar text={infoLabel} />}
           </>
         ) : (
           <div
@@ -175,7 +202,7 @@ export default function VideoTagger({
               onClick={() => stepFrame(-1)}
               disabled={!source}
             >
-              ◀︎1f
+              ◄ 1f
             </button>
             <button
               type="button"
@@ -191,7 +218,7 @@ export default function VideoTagger({
               onClick={() => stepFrame(1)}
               disabled={!source}
             >
-              1f▶︎
+              1f ►
             </button>
             <div style={{ opacity: 0.75, fontSize: 12 }}>{status}</div>
           </div>
@@ -223,7 +250,7 @@ export default function VideoTagger({
                 onClick={tagSwingStart}
                 disabled={!source}
               >
-                Set Start
+                Set Start @ f{frame}
               </button>
               <button
                 type="button"
@@ -231,7 +258,7 @@ export default function VideoTagger({
                 onClick={tagSwingContact}
                 disabled={!source}
               >
-                Set Contact
+                Set Contact @ f{frame}
               </button>
             </div>
           )}
