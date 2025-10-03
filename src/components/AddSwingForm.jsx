@@ -190,7 +190,7 @@ export default function AddSwingForm({
       </label>
 
       <label>
-        Swing Video:
+        Swing Video PJT:
         <input ref={fileInputRef} type="file" accept="video/*" onChange={onChangeFile} />
       </label>
 
