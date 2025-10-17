@@ -16,10 +16,11 @@
     "@ffmpeg/core": "^0.12.10",
     "@ffmpeg/core-mt": "^0.12.10",
     "@ffmpeg/core-st": "^0.11.1",
-    "@ffmpeg/ffmpeg": "^0.12.6",
+    "@ffmpeg/ffmpeg": "^0.10.1",
     "@ffmpeg/util": "^0.12.2",
     "gif.js": "^0.2.0",
     "idb": "^8.0.3",
+    "mp4box": "github:gpac/mp4box.js",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-rnd": "^10.5.2"

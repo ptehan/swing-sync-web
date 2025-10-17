@@ -6,19 +6,33 @@ import {
   getMatchupClipBlob,
   deleteMatchupClip,
   deletePitchClip,
+  deleteSwingClip,
   listMatchupClipKeys,
   listSwingClipKeys,
-  deleteAllSwingClips,   // ✅ new import
 } from "../utils/dataModel";
 
 // helper: guarantee the return value is a Blob with a video type
-async function ensureVideoBlob(promise) {
+async function ensureVideoBlob(promise, label = "") {
   let blob = await promise;
-  if (!blob) return null;
+  if (!blob) {
+    console.warn("[ensureVideoBlob]", label, "→ null");
+    return null;
+  }
   if (!(blob instanceof Blob) || !blob.type) {
+    console.warn("[ensureVideoBlob]", label, "wrapped as new Blob");
     blob = new Blob([blob], { type: "video/webm" });
   }
+  console.log("[ensureVideoBlob]", label, "size =", blob.size);
   return blob;
+}
+
+// quick debug helper: open blob in new tab
+async function openBlobInNewTab(getter, key) {
+  const blob = await ensureVideoBlob(getter(key), key);
+  if (!blob) return alert("No clip found.");
+  const url = URL.createObjectURL(blob);
+  console.log("[openBlobInNewTab]", key, "→", blob.size, "bytes");
+  window.open(url);
 }
 
 export default function ClipsLibrary({
@@ -46,7 +60,6 @@ export default function ClipsLibrary({
       const allKeys = await listMatchupClipKeys();
       const liveKeys = new Set(localMatchups.map((m) => m.videoKey));
       const orphans = allKeys.filter((k) => !liveKeys.has(k));
-
       for (const key of orphans) {
         try {
           await deleteMatchupClip(key);
@@ -59,7 +72,7 @@ export default function ClipsLibrary({
     cleanOrphans();
   }, [localMatchups]);
 
-  // 🔥 Load swings from IndexedDB with metadata
+  // 🔥 Load swings from IndexedDB
   useEffect(() => {
     async function loadSwingsFromDB() {
       const swings = await listSwingClipKeys();
@@ -75,18 +88,34 @@ export default function ClipsLibrary({
     loadSwingsFromDB();
   }, []);
 
-  // ✅ delete all swings at once
-  const handleDeleteAllSwings = async () => {
-    if (!window.confirm("Delete ALL swings? This cannot be undone.")) return;
-    try {
-      await deleteAllSwingClips();
-      setLocalSwings([]); // clear UI immediately
-      console.log("✅ All swings deleted");
-    } catch (err) {
-      console.error("Failed to delete all swings:", err);
-      alert("Failed to delete all swings from storage.");
+  // 🔥 Load matchups from IndexedDB on mount
+  useEffect(() => {
+    async function loadMatchupsFromDB() {
+      try {
+        const stored = await listMatchupClipKeys();
+        if (stored && stored.length) {
+          const loaded = stored.map((m, idx) => ({
+            videoKey: m.key,
+            hitterName: m.hitterName || "Unknown Hitter",
+            swingIndex: m.swingIndex ?? 0,
+            pitcherName: m.pitcherName || "Unknown Pitcher",
+            pitchIndex: m.pitchIndex ?? 0,
+            labelType: m.labelType || "sidebyside",
+            description: m.description || "",
+            createdAt: m.createdAt || Date.now(),
+            globalIndex: idx,
+          }));
+          setLocalMatchups(loaded);
+          console.log("✅ Loaded matchups from DB:", loaded.length);
+        } else {
+          console.log("ℹ️ No matchups in DB");
+        }
+      } catch (err) {
+        console.error("❌ Failed to load matchups:", err);
+      }
     }
-  };
+    loadMatchupsFromDB();
+  }, []);
 
   function renderMatchupRow(m, i) {
     const swingObj = localSwings.find(
@@ -99,13 +128,10 @@ export default function ClipsLibrary({
     const swingDetail = swingObj?.swingTime
       ? `time ${swingObj.swingTime.toFixed(3)}s`
       : "no time";
-
     const pitchDetail = pitchObj?.description || "no description";
-
     const clipType = m.videoKey?.includes("sideBySide")
       ? "Side-by-Side"
       : "Pitcher-Only";
-
     const globalIdx =
       typeof m.globalIndex === "number" ? m.globalIndex : i;
 
@@ -120,14 +146,7 @@ export default function ClipsLibrary({
         </span>
         <button
           type="button"
-          onClick={async () => {
-            const blob = await ensureVideoBlob(getMatchupClipBlob(m.videoKey));
-            if (!blob) return alert("No clip found.");
-            requestLoadVideoInTagger(
-              blob,
-              `Matchup: ${m.hitterName} vs ${m.pitcherName}`
-            );
-          }}
+          onClick={() => openBlobInNewTab(getMatchupClipBlob, m.videoKey)}
         >
           Preview
         </button>
@@ -136,9 +155,7 @@ export default function ClipsLibrary({
           onClick={async () => {
             if (window.confirm("Delete this matchup?")) {
               try {
-                if (m.videoKey) {
-                  await deleteMatchupClip(m.videoKey);
-                }
+                if (m.videoKey) await deleteMatchupClip(m.videoKey);
                 setLocalMatchups((prev) =>
                   prev.filter((_, idx) => idx !== i)
                 );
@@ -161,24 +178,6 @@ export default function ClipsLibrary({
       {/* Swings + Matchups by Hitter */}
       <div>
         <h3>Swings & Matchups by Hitter</h3>
-
-        {/* ✅ Button to nuke swings */}
-        <div style={{ marginBottom: 8 }}>
-          <button
-            style={{
-              backgroundColor: "red",
-              color: "white",
-              padding: "6px 12px",
-              border: "none",
-              borderRadius: 4,
-              cursor: "pointer",
-            }}
-            onClick={handleDeleteAllSwings}
-          >
-            Delete All Swings
-          </button>
-        </div>
-
         {hitters.length === 0 ? (
           <div style={{ fontSize: 12, opacity: 0.7 }}>No hitters added.</div>
         ) : (
@@ -186,7 +185,6 @@ export default function ClipsLibrary({
             const swingsFor = localSwings
               .filter((s) => s.hitterName === h.name)
               .map((s, idx) => ({ ...s, globalIndex: idx }));
-
             const matchupsFor = localMatchups
               .map((m, idx) => ({ ...m, globalIndex: idx }))
               .filter((m) => m.hitterName === h.name);
@@ -198,35 +196,47 @@ export default function ClipsLibrary({
                   {matchupsFor.length} matchups
                 </summary>
                 <div style={{ paddingLeft: 14 }}>
-                  {/* Swings */}
                   {swingsFor.length === 0 ? (
                     <div style={{ fontSize: 12, opacity: 0.7 }}>No swings.</div>
                   ) : (
                     swingsFor.map((s, i) => (
                       <div
                         key={`${h.name}-swing-${i}`}
-                        style={{ display: "flex", alignItems: "center", gap: 8 }}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                        }}
                       >
                         <span style={{ flex: 1 }}>
                           Swing {i + 1} • {s.videoKey ? "saved" : "no clip"}
                           {s.description ? ` — ${s.description}` : ""}
                         </span>
                         {s.videoKey && (
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              const blob = await ensureVideoBlob(
-                                getSwingClipBlob(s.videoKey)
-                              );
-                              if (!blob) return alert("No clip found.");
-                              requestLoadVideoInTagger(
-                                blob,
-                                `${h.name} Swing ${i + 1}`
-                              );
-                            }}
-                          >
-                            Preview
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                openBlobInNewTab(getSwingClipBlob, s.videoKey)
+                              }
+                            >
+                              Preview
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                requestLoadVideoInTagger(
+                                  ensureVideoBlob(
+                                    getSwingClipBlob(s.videoKey),
+                                    s.videoKey
+                                  ),
+                                  `${h.name} Swing ${i + 1}`
+                                )
+                              }
+                            >
+                              Tag
+                            </button>
+                          </>
                         )}
                         <button
                           type="button"
@@ -244,8 +254,6 @@ export default function ClipsLibrary({
                       </div>
                     ))
                   )}
-
-                  {/* Matchups */}
                   {matchupsFor.length === 0 ? null : (
                     <>
                       <div style={{ marginTop: 6, fontWeight: "bold" }}>
@@ -268,7 +276,9 @@ export default function ClipsLibrary({
           <div style={{ fontSize: 12, opacity: 0.7 }}>No pitchers added.</div>
         ) : (
           pitchers.map((p) => {
-            const pitchesFor = localPitches.filter((pt) => pt.pitcherName === p.name);
+            const pitchesFor = localPitches.filter(
+              (pt) => pt.pitcherName === p.name
+            );
             const matchupsFor = localMatchups
               .map((m, idx) => ({ ...m, globalIndex: idx }))
               .filter((m) => m.pitcherName === p.name);
@@ -280,44 +290,54 @@ export default function ClipsLibrary({
                   {matchupsFor.length} matchups
                 </summary>
                 <div style={{ paddingLeft: 14 }}>
-                  {/* Pitches */}
                   {pitchesFor.length === 0 ? (
                     <div style={{ fontSize: 12, opacity: 0.7 }}>No pitches.</div>
                   ) : (
                     pitchesFor.map((pt, i) => (
                       <div
                         key={`${p.name}-pitch-${i}`}
-                        style={{ display: "flex", alignItems: "center", gap: 8 }}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                        }}
                       >
                         <span style={{ flex: 1 }}>
                           Pitch {i + 1} • {pt.videoKey ? "saved" : "no clip"}
                           {pt.description ? ` — ${pt.description}` : ""}
                         </span>
                         {pt.videoKey && (
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              const blob = await ensureVideoBlob(
-                                getPitchClipBlob(pt.videoKey)
-                              );
-                              if (!blob) return alert("No clip found.");
-                              requestLoadVideoInTagger(
-                                blob,
-                                `${p.name} Pitch ${i + 1}`
-                              );
-                            }}
-                          >
-                            Preview
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                openBlobInNewTab(getPitchClipBlob, pt.videoKey)
+                              }
+                            >
+                              Preview
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                requestLoadVideoInTagger(
+                                  ensureVideoBlob(
+                                    getPitchClipBlob(pt.videoKey),
+                                    pt.videoKey
+                                  ),
+                                  `${p.name} Pitch ${i + 1}`
+                                )
+                              }
+                            >
+                              Tag
+                            </button>
+                          </>
                         )}
                         <button
                           type="button"
                           onClick={async () => {
                             if (window.confirm("Delete this pitch?")) {
                               try {
-                                if (pt.videoKey) {
-                                  await deletePitchClip(pt.videoKey);
-                                }
+                                if (pt.videoKey) await deletePitchClip(pt.videoKey);
                                 setLocalPitches((prev) =>
                                   prev.filter(
                                     (_, idx) =>
@@ -337,8 +357,6 @@ export default function ClipsLibrary({
                       </div>
                     ))
                   )}
-
-                  {/* Matchups */}
                   {matchupsFor.length === 0 ? null : (
                     <>
                       <div style={{ marginTop: 6, fontWeight: "bold" }}>

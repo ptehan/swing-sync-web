@@ -1,13 +1,116 @@
 // src/components/AddSwingForm.jsx
-import React, { useState, useRef, useCallback, useEffect } from "react";
+import React, { useState, useCallback } from "react";
 import VideoTagger from "./VideoTagger";
 import { saveSwingClip } from "../utils/dataModel";
-import * as ffmpegModule from "@ffmpeg/ffmpeg";
 
-const { createFFmpeg, fetchFile } = ffmpegModule;
+// 🔹 Deterministic frame-by-frame capture (AddPitchForm logic reused)
+async function captureFrames(file, startFrame, endFrame, FPS) {
+  console.log("[captureFrames] manual stepping start");
+  const startTimeSec = startFrame / FPS;
+  const endTimeSec = endFrame / FPS;
+  const frameStep = 1 / FPS;
+  const frameCount = Math.ceil((endTimeSec - startTimeSec) * FPS) ;
 
-// Singleton FFmpeg instance
-const ffmpeg = createFFmpeg({ log: true });
+  console.log(
+    `[captureFrames] start=${startTimeSec.toFixed(3)} end=${endTimeSec.toFixed(
+      3
+    )} frames=${frameCount}`
+  );
+
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    video.src = URL.createObjectURL(file);
+    video.crossOrigin = "anonymous";
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+
+    const log = (...args) => console.log("[captureFrames]", ...args);
+
+    video.onloadedmetadata = async () => {
+      const w = video.videoWidth;
+      const h = video.videoHeight;
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      ctx.font = "40px monospace";
+      ctx.fillStyle = "yellow";
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = "black";
+
+      const stream = canvas.captureStream(FPS);
+      const chunks = [];
+      const rec = new MediaRecorder(stream, { mimeType: "video/webm" });
+
+      rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+      rec.onstop = () => {
+        const blob = new Blob(chunks, { type: "video/webm" });
+        const swingDurationSec = frameCount / FPS; // 🔹 total clip duration
+        log(
+          "complete",
+          blob.size,
+          "bytes — swing duration:",
+          swingDurationSec.toFixed(3),
+          "s"
+        );
+        if (blob.size < 512) reject(new Error("Empty output"));
+        else
+          resolve({
+            blob,
+            swingDurationSec,
+            preOffsetMs: 0,
+            postOffsetMs: 0,
+          });
+      };
+
+      rec.start();
+      log(`recording ${frameCount} frames (~${(frameCount / FPS).toFixed(2)}s)`);
+
+      let frameIndex = 0;
+
+      const drawNext = () => {
+        if (frameIndex >= frameCount) {
+          log(
+            "STOPPING — last painted time =",
+            video.currentTime.toFixed(3),
+            "expected end =",
+            endTimeSec.toFixed(3)
+          );
+
+          // 🕐 wait briefly to flush final encoder clusters
+          setTimeout(() => {
+            if (rec.state === "recording") {
+              log("🛑 stopping recorder (after drain delay)");
+              rec.stop();
+            }
+          }, 300);
+          return;
+        }
+
+        const t = startTimeSec + frameIndex * frameStep;
+        video.currentTime = t;
+
+        video.onseeked = () => {
+          const waitForDecode = () => {
+            if (video.readyState < 4) {
+              requestAnimationFrame(waitForDecode);
+              return;
+            }
+            ctx.drawImage(video, 0, 0, w, h);
+            frameIndex++;
+            requestAnimationFrame(drawNext);
+          };
+          waitForDecode();
+        };
+      };
+
+      drawNext();
+    };
+
+    video.onerror = () => reject(new Error("Video load failed"));
+  });
+}
 
 export default function AddSwingForm({
   hitters,
@@ -15,161 +118,83 @@ export default function AddSwingForm({
   constants = { FPS: 30 },
   onClose,
 }) {
+  const FPS = Number(constants?.FPS) || 30;
   const [selectedHitter, setSelectedHitter] = useState("");
   const [file, setFile] = useState(null);
   const [videoUrl, setVideoUrl] = useState(null);
   const [description, setDescription] = useState("");
   const [startFrame, setStartFrame] = useState(null);
   const [contactFrame, setContactFrame] = useState(null);
-  const [startTime, setStartTime] = useState(null);
-  const [contactTime, setContactTime] = useState(null);
-  const [frameOffset, setFrameOffset] = useState(0);
   const [error, setError] = useState("");
-  const [previewUrl, setPreviewUrl] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [videoFPS, setVideoFPS] = useState(constants.FPS);
+  const [busy, setBusy] = useState(false);
 
-  const fileInputRef = useRef(null);
-
-  // Log component mount with unique version
-  useEffect(() => {
-    console.log("[AddSwingForm] VERSION_20251002_1 MOUNTED at", new Date().toISOString());
-  }, []);
-
-  // Handle file input change
   const onChangeFile = useCallback((e) => {
-    console.log("[AddSwingForm] VERSION_20251002_1 File input changed at", new Date().toISOString());
     const f = e.target.files?.[0] || null;
-    console.log("[AddSwingForm] VERSION_20251002_1 Selected file:", f ? f.name : "null");
     setFile(f);
     setStartFrame(null);
     setContactFrame(null);
-    setStartTime(null);
-    setContactTime(null);
     setVideoUrl(f ? URL.createObjectURL(f) : null);
-    setPreviewUrl(null);
-    setVideoFPS(constants.FPS);
-    if (f) {
-      console.log("[AddSwingForm] VERSION_20251002_1 File selected, skipping metadata for now");
-    }
-  }, [constants.FPS]);
-
-  // Basic frame-based trimming
-  async function trimWithFFmpeg(srcFile, startFrame, endFrame, fps) {
-    console.log("[AddSwingForm] VERSION_20251002_1 trimWithFFmpeg called with startFrame=", startFrame, "endFrame=", endFrame, "fps=", fps);
-    if (!ffmpeg.isLoaded()) {
-      console.log("[AddSwingForm] VERSION_20251002_1 Loading FFmpeg");
-      try {
-        await ffmpeg.load();
-        console.log("[AddSwingForm] VERSION_20251002_1 FFmpeg loaded");
-      } catch (err) {
-        console.error("[AddSwingForm] VERSION_20251002_1 FFmpeg load failed:", err);
-        throw new Error(`FFmpeg load failed: ${err.message}`);
-      }
-    }
-    try {
-      const inputFile = "input.mp4";
-      ffmpeg.FS("writeFile", inputFile, await fetchFile(srcFile));
-      console.log("[AddSwingForm] VERSION_20251002_1 Input file written");
-
-      const adjustedStartFrame = startFrame + frameOffset;
-      const adjustedEndFrame = endFrame + frameOffset;
-      console.log("[AddSwingForm] VERSION_20251002_1 Trimming frames", adjustedStartFrame, "to", adjustedEndFrame);
-
-      const frameDir = "frames";
-      ffmpeg.FS("mkdir", frameDir);
-      await ffmpeg.run(
-        "-i", inputFile,
-        "-vf", `select='between(n,${adjustedStartFrame},${adjustedEndFrame})',setpts=PTS-STARTPTS`,
-        "-vsync", "0",
-        `${frameDir}/frame_%04d.png`
-      );
-      console.log("[AddSwingForm] VERSION_20251002_1 Frames extracted");
-
-      const frameFiles = ffmpeg.FS("readdir", frameDir).filter(f => f.endsWith(".png"));
-      console.log("[AddSwingForm] VERSION_20251002_1 Extracted", frameFiles.length, "frames (expected:", adjustedEndFrame - adjustedStartFrame + 1, ")");
-
-      if (frameFiles.length === 0) {
-        throw new Error("No frames extracted. Check frame range or video integrity.");
-      }
-
-      const outputFile = "output.mp4";
-      await ffmpeg.run(
-        "-framerate", fps.toString(),
-        "-i", `${frameDir}/frame_%04d.png`,
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", "18",
-        "-pix_fmt", "yuv420p",
-        "-an",
-        outputFile
-      );
-      console.log("[AddSwingForm] VERSION_20251002_1 Clip encoded");
-
-      const data = ffmpeg.FS("readFile", outputFile);
-      return new Blob([data.buffer], { type: "video/mp4" });
-    } finally {
-      try {
-        ffmpeg.FS("unlink", "input.mp4");
-        ffmpeg.FS("unlink", "output.mp4");
-        const frameDir = "frames";
-        if (ffmpeg.FS("readdir", frameDir)) {
-          ffmpeg.FS("readdir", frameDir).forEach(f => {
-            if (f.endsWith(".png")) ffmpeg.FS("unlink", `${frameDir}/${f}`);
-          });
-          ffmpeg.FS("rmdir", frameDir);
-        }
-      } catch (e) {
-        console.warn("[AddSwingForm] VERSION_20251002_1 Cleanup failed:", e);
-      }
-    }
-  }
+    setError("");
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    console.log("[AddSwingForm] VERSION_20251002_1 Form submitted");
     setError("");
 
     if (!selectedHitter || !file || startFrame == null || contactFrame == null) {
-      console.log("[AddSwingForm] VERSION_20251002_1 Validation failed: missing fields");
-      setError("Please select a hitter, video, and set start/contact frames.");
+      setError("Please select hitter, choose video, and tag start + contact frames.");
       return;
     }
-
     if (startFrame >= contactFrame) {
-      console.log("[AddSwingForm] VERSION_20251002_1 Validation failed: startFrame >= contactFrame");
       setError("Start frame must be before contact frame.");
       return;
     }
 
     try {
-      setLoading(true);
-      console.log("[AddSwingForm] VERSION_20251002_1 Processing: startFrame=", startFrame, `(${startFrame / videoFPS}s), contactFrame=`, contactFrame, `(${contactFrame / videoFPS}s), offset=`, frameOffset);
+      setBusy(true);
+      console.log("[AddSwingForm] capture start");
+      const { blob, swingDurationSec } = await captureFrames(
+        file,
+        startFrame,
+        contactFrame,
+        FPS
+      );
+      console.log(
+        `[AddSwingForm] final blob size ${blob.size}, duration ${swingDurationSec.toFixed(
+          3
+        )}s`
+      );
 
-      const clipBlob = await trimWithFFmpeg(file, startFrame, contactFrame, videoFPS);
-      const newPreviewUrl = URL.createObjectURL(clipBlob);
-      setPreviewUrl(newPreviewUrl);
-      console.log("[AddSwingForm] VERSION_20251002_1 Preview URL generated");
+      const videoKey = `swing_${selectedHitter}_${Date.now()}_${Math.random()
+        .toString(36)
+        .slice(2, 8)}`;
 
-      const videoKey = `swing_${selectedHitter}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      await saveSwingClip(videoKey, clipBlob, selectedHitter, description.trim(), startFrame, contactFrame);
-      console.log("[AddSwingForm] VERSION_20251002_1 Clip saved");
+      // 🔹 Store duration along with clip
+      await saveSwingClip(
+        videoKey,
+        blob,
+        selectedHitter,
+        description.trim(),
+        startFrame,
+        contactFrame,
+        swingDurationSec
+      );
 
       onAddSwing(selectedHitter, {
         startFrame,
         contactFrame,
         videoKey,
         description: description.trim(),
-        cropBox: null,
+        swingDurationSec,
       });
 
-      alert("Swing saved!");
+      alert(`Swing saved! Duration: ${swingDurationSec.toFixed(3)}s`);
       if (onClose) onClose();
     } catch (err) {
-      console.error("[AddSwingForm] VERSION_20251002_1 Submit error:", err);
-      setError(`Failed to process swing: ${err.message}`);
+      console.error("[AddSwingForm] save failed:", err);
+      setError(err.message || "Failed to save swing.");
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   };
 
@@ -179,7 +204,10 @@ export default function AddSwingForm({
 
       <label>
         Hitter:
-        <select value={selectedHitter} onChange={(e) => setSelectedHitter(e.target.value)}>
+        <select
+          value={selectedHitter}
+          onChange={(e) => setSelectedHitter(e.target.value)}
+        >
           <option value="">-- Select Hitter --</option>
           {hitters.map((h) => (
             <option key={h.name} value={h.name}>
@@ -190,103 +218,46 @@ export default function AddSwingForm({
       </label>
 
       <label>
-        Swing Video PJT:
-        <input ref={fileInputRef} type="file" accept="video/*" onChange={onChangeFile} />
+        Swing Video:
+        <input type="file" accept="video/*" onChange={onChangeFile} />
       </label>
 
       {videoUrl && (
-        <VideoTagger
-          source={videoUrl}
-          metadata={{ label: `Swing tagging: ${selectedHitter}` }}
-          fps={videoFPS}
-          taggable={true}
-          onTagSwing={({ startFrame: s, contactFrame: c, startTime: st, contactTime: ct }) => {
-            console.log("[AddSwingForm] VERSION_20251002_1 Tagged: startFrame=", s, `(${st?.toFixed(3)}s), contactFrame=`, c, `(${ct?.toFixed(3)}s)`);
-            if (Number.isFinite(s)) {
-              setStartFrame(s);
-              setStartTime(st);
-            }
-            if (Number.isFinite(c)) {
-              setContactFrame(c);
-              setContactTime(ct);
-            }
-          }}
-        />
+        <div>
+          <VideoTagger
+            source={videoUrl}
+            metadata={{ label: `Swing tagging: ${selectedHitter}` }}
+            fps={FPS}
+            taggable
+            onTagSwingStart={(f) => setStartFrame(f)}
+            onTagSwingContact={(f) => setContactFrame(f)}
+          />
+        </div>
       )}
 
       {(startFrame != null || contactFrame != null) && (
         <div>
-          Tagged: start={startFrame ?? "—"} ({startTime ? startTime.toFixed(3) : "—"}s), 
-          contact={contactFrame ?? "—"} ({contactTime ? contactTime.toFixed(3) : "—"}s), 
-          FPS={videoFPS}
+          Tagged: start={startFrame ?? "—"}, contact={contactFrame ?? "—"}, FPS={FPS}
         </div>
       )}
 
-      <div style={{ display: "grid", gap: "8px" }}>
-        <label>
-          Manual Start Frame:
-          <input
-            type="number"
-            min="0"
-            value={startFrame ?? ""}
-            onChange={(e) => {
-              const val = parseInt(e.target.value, 10);
-              if (Number.isFinite(val)) {
-                setStartFrame(val);
-                setStartTime(val / videoFPS);
-                console.log("[AddSwingForm] VERSION_20251002_1 Manual start frame:", val);
-              }
-            }}
-          />
-        </label>
-        <label>
-          Manual Contact Frame:
-          <input
-            type="number"
-            min="0"
-            value={contactFrame ?? ""}
-            onChange={(e) => {
-              const val = parseInt(e.target.value, 10);
-              if (Number.isFinite(val)) {
-                setContactFrame(val);
-                setContactTime(val / videoFPS);
-                console.log("[AddSwingForm] VERSION_20251002_1 Manual contact frame:", val);
-              }
-            }}
-          />
-        </label>
-        <label>
-          Frame Offset (adjust if clip is early/late):
-          <input
-            type="number"
-            value={frameOffset}
-            onChange={(e) => {
-              const val = parseInt(e.target.value, 10) || 0;
-              setFrameOffset(val);
-              console.log("[AddSwingForm] VERSION_20251002_1 Frame offset:", val);
-            }}
-          />
-        </label>
-      </div>
-
       <label>
         Description:
-        <input type="text" value={description} onChange={(e) => setDescription(e.target.value)} />
+        <input
+          type="text"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
       </label>
 
       <button
         type="submit"
-        disabled={!selectedHitter || !file || startFrame == null || contactFrame == null || loading}
-      >a
-        {loading ? "Processing..." : "Save Swing"}
+        disabled={
+          !selectedHitter || !file || startFrame == null || contactFrame == null || busy
+        }
+      >
+        {busy ? "Saving…" : "Save Swing"}
       </button>
-
-      {previewUrl && (
-        <div>
-          <h4>Preview of trimmed clip:</h4>
-          <video src={previewUrl} controls autoPlay></video>
-        </div>
-      )}
 
       {error && <div style={{ color: "crimson" }}>{error}</div>}
     </form>

@@ -44,7 +44,8 @@ export default function VideoTagger({
   source,
   metadata = {},
   fps = DEFAULT_FPS,
-  onTagSwing,
+  onTagSwingStart,
+  onTagSwingContact,
   onTagPitchContact,
   taggable = false,
 }) {
@@ -125,15 +126,15 @@ export default function VideoTagger({
     const time = videoRef.current?.currentTime ?? presentedTime;
     const f = timeToFrame(time, fps);
     setStatus(`Swing start @ f${f} (${time.toFixed(3)}s)`);
-    if (onTagSwing) onTagSwing({ startFrame: f, contactFrame: null, startTime: time, contactTime: null });
-  }, [fps, presentedTime, onTagSwing]);
+    if (onTagSwingStart) onTagSwingStart(f, time);
+  }, [fps, presentedTime, onTagSwingStart]);
 
   const tagSwingContact = useCallback(() => {
     const time = videoRef.current?.currentTime ?? presentedTime;
     const f = timeToFrame(time, fps);
     setStatus(`Swing contact @ f${f} (${time.toFixed(3)}s)`);
-    if (onTagSwing) onTagSwing({ startFrame: null, contactFrame: f, startTime: null, contactTime: time });
-  }, [fps, presentedTime, onTagSwing]);
+    if (onTagSwingContact) onTagSwingContact(f, time);
+  }, [fps, presentedTime, onTagSwingContact]);
 
   return (
     <div

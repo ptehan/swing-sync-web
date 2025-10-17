@@ -9,6 +9,7 @@ import MatchupSimulator from "./components/MatchupSimulator";
 import VideoTagger from "./components/VideoTagger";
 import ClipsLibrary from "./components/ClipsLibrary";
 import Modal from "./components/Modal";
+import WebCodecsTest from "./components/WebCodecsTest"; // ✅ Added
 import logo from "/swing-sync-logo.png";
 import { deleteAllClips } from "./utils/dataModel";
 
@@ -248,6 +249,8 @@ export default function App() {
         fontFamily: "Arial, sans-serif",
       }}
     >
+
+
       <img
         src={logo}
         alt="SwingSync Logo"
@@ -265,10 +268,7 @@ export default function App() {
         <button onClick={() => setOpenModal("clips")}>Clips Library</button>
 
         {/* Hidden but still defined */}
-        <button 
-          onClick={() => setVideoOpen(true)} 
-          style={{ display: "none" }}
-        >
+        <button onClick={() => setVideoOpen(true)} style={{ display: "none" }}>
           Video Player
         </button>
         <button

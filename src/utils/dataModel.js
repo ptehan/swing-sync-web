@@ -2,38 +2,27 @@
 /* =====================================================================================
    Swing Sync Data Model — IndexedDB storage for pitch + swing + matchup clips
    -------------------------------------------------------------------------------------
-   Stores both Blob + bytes for reliability.
+   Stores ArrayBuffer bytes + MIME type (no raw Blob).
    Provides save/get/delete/list functions for PITCH, SWING, and MATCHUP clips.
    ===================================================================================== */
 
 /* ===== Constants ===== */
-export const DB_NAME = "SwingSyncDB_v2";
-export const DB_VERSION = 3; // bumped version for swing metadata
+export const DB_NAME = "SwingSyncDB";
+export const DB_VERSION = 1; // reset schema, clean slate
 
 export const STORE_PITCH_CLIPS = "pitchClips";
 export const STORE_SWING_CLIPS = "swingClips";
 export const STORE_MATCHUP_CLIPS = "matchupClips";
 
 /* ===== Utilities ===== */
-export function ensureWebmType(blob) {
-  if (!(blob instanceof Blob)) return null;
-  if (blob.type && blob.type.startsWith("video/")) return blob;
-  try {
-    return new Blob([blob], { type: "video/webm" });
-  } catch {
-    return blob;
-  }
-}
-
 function blobFromBytes(bytes, type = "video/webm") {
   try {
-    return new Blob([bytes], { type: type || "video/webm" });
+    return new Blob([bytes], { type });
   } catch {
     return null;
   }
 }
 
-/* ===== DB Open ===== */
 function openDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -57,30 +46,15 @@ function openDB() {
 /* =====================================================================================
    PITCH CLIP API
    ===================================================================================== */
-/* =====================================================================================
-   PITCH CLIP API
-   ===================================================================================== */
-export async function savePitchClip(
-  videoKey,
-  blob,
-  description = "",
-  contactFrame = null
-) {
-  // 🔒 normalize
-  if (!(blob instanceof Blob) || !blob.type || !blob.type.startsWith("video/")) {
-    blob = new Blob([blob], { type: "video/webm" });
-  }
-
+export async function savePitchClip(videoKey, blob, description = "", contactFrame = null) {
   const db = await openDB();
   const bytes = await blob.arrayBuffer();
-  const type =
-    blob.type && blob.type.startsWith("video/") ? blob.type : "video/webm";
+  const type = blob.type && blob.type.startsWith("video/") ? blob.type : "video/webm";
 
   await new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_PITCH_CLIPS, "readwrite");
     tx.objectStore(STORE_PITCH_CLIPS).put({
       key: videoKey,
-      blob,
       bytes,
       type,
       description,
@@ -102,11 +76,8 @@ export async function getPitchClipBlob(videoKey) {
     req.onerror = () => reject(req.error);
   });
   db.close();
-
   if (!rec) return null;
-  if (rec.blob instanceof Blob && rec.blob.size) return ensureWebmType(rec.blob);
-  if (rec.bytes) return ensureWebmType(blobFromBytes(rec.bytes, rec.type));
-  return null;
+  return blobFromBytes(rec.bytes, rec.type);
 }
 
 export async function deletePitchClip(videoKey) {
@@ -148,31 +119,24 @@ export async function saveSwingClip(
   hitterName,
   description = "",
   startFrame = null,
-  contactFrame = null
+  contactFrame = null,
+  adjustments = null
 ) {
-  // 🔒 normalize to a real Blob with a video/webm type
-  if (!(blob instanceof Blob) || !blob.type) {
-    blob = new Blob([blob], { type: "video/webm" });
-  } else if (!blob.type.startsWith("video/")) {
-    blob = new Blob([blob], { type: "video/webm" });
-  }
-
   const db = await openDB();
   const bytes = await blob.arrayBuffer();
-  const type =
-    blob.type && blob.type.startsWith("video/") ? blob.type : "video/webm";
+  const type = blob.type && blob.type.startsWith("video/") ? blob.type : "video/webm";
 
   await new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_SWING_CLIPS, "readwrite");
     tx.objectStore(STORE_SWING_CLIPS).put({
       key: videoKey,
-      blob,
       bytes,
       type,
       hitterName,
       description,
       startFrame,
       contactFrame,
+      adjustments,
       createdAt: Date.now(),
     });
     tx.oncomplete = resolve;
@@ -190,11 +154,8 @@ export async function getSwingClipBlob(videoKey) {
     req.onerror = () => reject(req.error);
   });
   db.close();
-
   if (!rec) return null;
-  if (rec.blob instanceof Blob && rec.blob.size) return ensureWebmType(rec.blob);
-  if (rec.bytes) return ensureWebmType(blobFromBytes(rec.bytes, rec.type));
-  return null;
+  return blobFromBytes(rec.bytes, rec.type);
 }
 
 export async function deleteSwingClip(videoKey) {
@@ -217,8 +178,8 @@ export async function listSwingClipKeys() {
     req.onsuccess = (e) => {
       const cur = e.target.result;
       if (cur) {
-        const { hitterName, description, startFrame, contactFrame } = cur.value || {};
-        out.push({ key: cur.key, hitterName, description, startFrame, contactFrame });
+        const { hitterName, description, startFrame, contactFrame, adjustments } = cur.value || {};
+        out.push({ key: cur.key, hitterName, description, startFrame, contactFrame, adjustments });
         cur.continue();
       } else resolve(out);
     };
@@ -231,46 +192,61 @@ export async function listSwingClipKeys() {
 /* =====================================================================================
    MATCHUP CLIP API
    ===================================================================================== */
-export async function saveMatchupClip(videoKey, blob) {
-  // 🔒 normalize
-  if (!(blob instanceof Blob) || !blob.type || !blob.type.startsWith("video/")) {
-    blob = new Blob([blob], { type: "video/webm" });
-  }
+/* ===========================
+   MATCHUP CLIP STORAGE
+   =========================== */
 
-  const db = await openDB();
-  const bytes = await blob.arrayBuffer();
-  const type =
-    blob.type && blob.type.startsWith("video/") ? blob.type : "video/webm";
+export async function saveMatchupClip(key, blob, meta = {}) {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onsuccess = (ev) => {
+      const db = ev.target.result;
+      const tx = db.transaction(STORE_MATCHUP_CLIPS, "readwrite");
+      const store = tx.objectStore(STORE_MATCHUP_CLIPS);
 
-  await new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_MATCHUP_CLIPS, "readwrite");
-    tx.objectStore(STORE_MATCHUP_CLIPS).put({
-      key: videoKey,
-      blob,
-      bytes,
-      type,
-      createdAt: Date.now(),
-    });
-    tx.oncomplete = resolve;
-    tx.onerror = () => reject(tx.error);
-  });
-  db.close();
-}
+      // ✅ keyPath schema expects the key inside the object, not as a param
+      const record = {
+        key,
+        blob,
+        type: blob?.type || "video/webm",
+        createdAt: Date.now(),
+        ...meta,
+      };
 
-export async function getMatchupClipBlob(videoKey) {
-  const db = await openDB();
-  const rec = await new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_MATCHUP_CLIPS, "readonly");
-    const req = tx.objectStore(STORE_MATCHUP_CLIPS).get(videoKey);
-    req.onsuccess = () => resolve(req.result || null);
+      store.put(record); // <— no key param
+
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error);
+    };
     req.onerror = () => reject(req.error);
   });
-  db.close();
+}
 
-  if (!rec) return null;
-  if (rec.blob instanceof Blob && rec.blob.size) return ensureWebmType(rec.blob);
-  if (rec.bytes) return ensureWebmType(blobFromBytes(rec.bytes, rec.type));
-  return null;
+export async function getMatchupClipBlob(key) {
+  if (!key) throw new Error("getMatchupClipBlob: key required");
+
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onsuccess = (ev) => {
+      const db = ev.target.result;
+      const tx = db.transaction(STORE_MATCHUP_CLIPS, "readonly");
+      const store = tx.objectStore(STORE_MATCHUP_CLIPS);
+
+      const getReq = store.get(key);
+      getReq.onsuccess = () => {
+        const data = getReq.result;
+        if (!data) {
+          reject(new Error(`No matchup found for key ${key}`));
+          return;
+        }
+        // Support both plain Blob and wrapped record
+        const blob = data instanceof Blob ? data : data.blob;
+        resolve(blob);
+      };
+      getReq.onerror = () => reject(getReq.error);
+    };
+    req.onerror = () => reject(req.error);
+  });
 }
 
 export async function deleteMatchupClip(videoKey) {
@@ -286,25 +262,78 @@ export async function deleteMatchupClip(videoKey) {
 
 export async function listMatchupClipKeys() {
   const db = await openDB();
-  const keys = await new Promise((resolve, reject) => {
+  const matchups = await new Promise((resolve, reject) => {
     const out = [];
     const tx = db.transaction(STORE_MATCHUP_CLIPS, "readonly");
-    const req = tx.objectStore(STORE_MATCHUP_CLIPS).openKeyCursor();
+    const req = tx.objectStore(STORE_MATCHUP_CLIPS).openCursor();
     req.onsuccess = (e) => {
       const cur = e.target.result;
       if (cur) {
-        out.push(cur.key);
+        const v = cur.value;
+        out.push({
+          key: v.key,
+          hitterName: v.hitterName,
+          swingIndex: v.swingIndex,
+          pitcherName: v.pitcherName,
+          pitchIndex: v.pitchIndex,
+          labelType: v.labelType || "sidebyside",
+          description: v.description || "",
+          createdAt: v.createdAt,
+        });
         cur.continue();
-      } else resolve(out);
+      } else resolve(out.sort((a, b) => b.createdAt - a.createdAt));
     };
     req.onerror = () => reject(req.error);
   });
   db.close();
-  return keys;
+  return matchups;
 }
 
+
 /* =====================================================================================
-   Legacy helpers (unchanged, still useful for App.jsx state)
+   UPDATE DESCRIPTION HELPERS
+   ===================================================================================== */
+export async function updateSwingDescription(videoKey, newDescription) {
+  const db = await openDB();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_SWING_CLIPS, "readwrite");
+    const store = tx.objectStore(STORE_SWING_CLIPS);
+    const getReq = store.get(videoKey);
+    getReq.onsuccess = () => {
+      const data = getReq.result;
+      if (!data) return resolve(false);
+      data.description = newDescription;
+      store.put(data);
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    };
+    getReq.onerror = () => reject(getReq.error);
+  });
+  db.close();
+}
+
+export async function updatePitchDescription(videoKey, newDescription) {
+  const db = await openDB();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_PITCH_CLIPS, "readwrite");
+    const store = tx.objectStore(STORE_PITCH_CLIPS);
+    const getReq = store.get(videoKey);
+    getReq.onsuccess = () => {
+      const data = getReq.result;
+      if (!data) return resolve(false);
+      data.description = newDescription;
+      store.put(data);
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    };
+    getReq.onerror = () => reject(getReq.error);
+  });
+  db.close();
+}
+
+
+/* =====================================================================================
+   Helpers
    ===================================================================================== */
 export function createHitter(name) {
   return { name, swings: [] };
@@ -320,7 +349,6 @@ export function deleteSwing(hitter, index) {
 export function createPitcher(name, description = "", teamName = "") {
   return { name, description, teamName, pitches: [] };
 }
-
 export function addPitch(pitcher, pitch) {
   pitcher.pitches.push(pitch);
   return pitch;
@@ -350,11 +378,6 @@ export async function deleteAllClips() {
     )
   );
   db.close();
-
-  Object.keys(localStorage)
-    .filter((k) => k.startsWith("matchupClip_"))
-    .forEach((k) => localStorage.removeItem(k));
-
   console.log("✅ All clips deleted (pitches, swings, matchups)");
 }
 

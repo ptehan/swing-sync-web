@@ -1,14 +1,113 @@
 // src/components/AddPitchForm.jsx
-import React, { useState, useRef, useCallback } from "react";
+import React, { useState, useCallback } from "react";
 import VideoTagger from "./VideoTagger";
-import { savePitchClip, ensureWebmType } from "../utils/dataModel";
-import { FFmpeg } from "@ffmpeg/ffmpeg";
+import { savePitchClip } from "../utils/dataModel";
 
-const ffmpeg = new FFmpeg({ log: true });
+// Manual frame-by-frame capture with visible frame numbers & encoder drain
+async function captureFrames(file, contactFrame, FPS) {
+  console.log("[captureFrames] manual stepping start");
+  const contactTimeSec = contactFrame / FPS;
+  const backtrackSec = 2;
+  const startTimeSec = Math.max(0, contactTimeSec - backtrackSec);
+  const endTimeSec = contactTimeSec;
+  const frameStep = 1 / FPS;
+  const frameCount = Math.ceil((endTimeSec - startTimeSec) * FPS) + 1;
 
-async function toU8(blob) {
-  const buf = await blob.arrayBuffer();
-  return new Uint8Array(buf);
+  console.log(
+    `[captureFrames] start=${startTimeSec.toFixed(3)} end=${endTimeSec.toFixed(
+      3
+    )} frames=${frameCount}`
+  );
+
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    video.src = URL.createObjectURL(file);
+    video.crossOrigin = "anonymous";
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+
+    const log = (...args) => console.log("[captureFrames]", ...args);
+
+    video.onloadedmetadata = async () => {
+      const w = video.videoWidth;
+      const h = video.videoHeight;
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      ctx.font = "40px monospace";
+      ctx.fillStyle = "yellow";
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = "black";
+
+      const stream = canvas.captureStream(FPS);
+      const chunks = [];
+      const rec = new MediaRecorder(stream, { mimeType: "video/webm" });
+
+      rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+      rec.onstop = () => {
+        const blob = new Blob(chunks, { type: "video/webm" });
+        log("complete", blob.size, "bytes");
+        if (blob.size < 512) reject(new Error("Empty output"));
+        else resolve({ blob, preOffsetMs: 0, postOffsetMs: 0 });
+      };
+
+      rec.start();
+      log(`recording ${frameCount} frames (~${(frameCount / FPS).toFixed(2)}s)`);
+
+      let frameIndex = 0;
+      let finished = false;
+
+      const drawNext = () => {
+        if (frameIndex >= frameCount) {
+          finished = true;
+          log(
+            "STOPPING — last painted time =",
+            video.currentTime.toFixed(3),
+            "expected end =",
+            endTimeSec.toFixed(3)
+          );
+          // wait for encoder drain
+          const waitForDrain = () => {
+            if (stream.getVideoTracks()[0].readyState === "ended") {
+              rec.stop();
+              return;
+            }
+            // small delay before stopping to flush last clusters
+            setTimeout(() => {
+              log("🛑 stopping recorder (after drain delay)");
+              rec.stop();
+            }, 300);
+          };
+          waitForDrain();
+          return;
+        }
+
+        const t = startTimeSec + frameIndex * frameStep;
+        video.currentTime = t;
+
+        video.onseeked = () => {
+          const waitForDecode = () => {
+            if (video.readyState < 4) {
+              requestAnimationFrame(waitForDecode);
+              return;
+            }
+ctx.drawImage(video, 0, 0, w, h);
+log("PAINTED frame", frameIndex, "time", t.toFixed(3));
+frameIndex++;
+requestAnimationFrame(drawNext);
+
+          };
+          waitForDecode();
+        };
+      };
+
+      drawNext();
+    };
+
+    video.onerror = () => reject(new Error("Video load failed"));
+  });
 }
 
 export default function AddPitchForm({
@@ -18,146 +117,100 @@ export default function AddPitchForm({
   onClose,
 }) {
   const FPS = Number(constants?.FPS) || 30;
-
-  const [selectedPitcher, setSelectedPitcher] = useState("");
+  const [pitcher, setPitcher] = useState("");
   const [file, setFile] = useState(null);
-  const [videoUrl, setVideoUrl] = useState(null);
-  const [description, setDescription] = useState("");
-  const [contactFrame, setContactFrame] = useState(null);
-  const [error, setError] = useState("");
+  const [url, setUrl] = useState(null);
+  const [desc, setDesc] = useState("");
+  const [frame, setFrame] = useState(null);
+  const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const fileInputRef = useRef(null);
-
-  const onChangeFile = useCallback((e) => {
+  const onFile = useCallback((e) => {
     const f = e.target.files?.[0] || null;
     setFile(f);
-    setContactFrame(null);
-    setVideoUrl(f ? URL.createObjectURL(f) : null);
+    setFrame(null);
+    setUrl(f ? URL.createObjectURL(f) : null);
+    setErr("");
   }, []);
 
-  async function extractFramesWithFFmpeg(srcFile, startFrame, endFrame, FPS) {
-    if (!ffmpeg.loaded) {
-
-console.log("AddPitchForm BASE_URL is:", import.meta.env.BASE_URL);
-const BASE = window.location.origin + "/swing-sync-web/";
-
-await ffmpeg.load({
-  coreURL: BASE + "ffmpeg/ffmpeg-core.js",
-  wasmURL: BASE + "ffmpeg/ffmpeg-core.wasm",
-  workerURL: BASE + "ffmpeg/ffmpeg-core.worker.js",
-});
-    }
-
-    await ffmpeg.writeFile("input.webm", await toU8(srcFile));
-
-    // Build filter: select only the frames we want, keep FPS consistent
-    const filter = `select='between(n\\,${startFrame}\\,${endFrame})',setpts=N/FRAME_RATE/TB`;
-
-    await ffmpeg.exec([
-      "-i", "input.webm",
-      "-vf", filter,
-      "-r", String(FPS),
-      "-an",
-      "-c:v", "libvpx",
-      "-b:v", "1M",
-      "clip.webm",
-    ]);
-
-    const out = await ffmpeg.readFile("clip.webm");
-    return new Blob([out.buffer], { type: "video/webm" });
-  }
-
-  const handleSubmit = async (e) => {
+  const submit = async (e) => {
     e.preventDefault();
-    setError("");
+    if (!pitcher || !file || frame == null)
+      return setErr("Select pitcher, video, and tag frame");
 
-    if (!selectedPitcher || !file || contactFrame == null) {
-      setError("Please select pitcher, choose video, and tag contact frame.");
-      return;
-    }
-
-    setBusy(true);
     try {
-      const startFrame = Math.max(0, contactFrame - (2 * FPS - 1)); // 60 frames total
-      const endFrame = contactFrame;
-
-      const clipBlob = await extractFramesWithFFmpeg(file, startFrame, endFrame, FPS);
-
-      const videoKey = `pitch_${selectedPitcher}_${Date.now()}_${Math.random()
+      setBusy(true);
+      console.log("[AddPitchForm] capture start");
+      const { blob, preOffsetMs, postOffsetMs } = await captureFrames(
+        file,
+        frame,
+        FPS
+      );
+      console.log("[AddPitchForm] final blob size", blob.size);
+      const key = `pitch_${pitcher}_${Date.now()}_${Math.random()
         .toString(36)
         .slice(2, 8)}`;
-
-      await savePitchClip(videoKey, clipBlob);
-
-      onAddPitch(selectedPitcher, {
-        contactFrame: endFrame - startFrame, // always last frame
-        videoKey,
-        description: description.trim(),
+      console.log("[AddPitchForm] saving clip", key);
+      await savePitchClip(key, blob, desc.trim(), frame);
+      onAddPitch(pitcher, {
+        contactFrame: frame,
+        videoKey: key,
+        description: desc.trim(),
+        preOffsetMs,
+        postOffsetMs,
       });
-
       alert("Pitch saved!");
-      if (onClose) onClose();
-    } catch (err) {
-      console.error("[AddPitchForm] save failed:", err);
-      setError(err.message || "Failed to save pitch.");
+      onClose && onClose();
+    } catch (e2) {
+      console.error("[AddPitchForm] failed", e2);
+      setErr(e2.message);
     } finally {
       setBusy(false);
-      try {
-        await ffmpeg.deleteFile("input.webm");
-        await ffmpeg.deleteFile("clip.webm");
-      } catch {}
     }
   };
 
   return (
-    <form onSubmit={handleSubmit} style={{ display: "grid", gap: "12px" }}>
+    <form onSubmit={submit} style={{ display: "grid", gap: 12 }}>
       <h3>Add Pitch</h3>
 
       <label>
         Pitcher:
-        <select value={selectedPitcher} onChange={(e) => setSelectedPitcher(e.target.value)}>
+        <select value={pitcher} onChange={(e) => setPitcher(e.target.value)}>
           <option value="">-- Select Pitcher --</option>
           {pitchers.map((p) => (
-            <option key={p.name} value={p.name}>
-              {p.name}
-            </option>
+            <option key={p.name}>{p.name}</option>
           ))}
         </select>
       </label>
 
       <label>
         Pitch Video:
-        <input ref={fileInputRef} type="file" accept="video/*" onChange={onChangeFile} />
+        <input type="file" accept="video/*" onChange={onFile} />
       </label>
 
-      {videoUrl && (
-        <VideoTagger
-          source={videoUrl}
-          metadata={{ label: `Pitch tagging: ${selectedPitcher}` }}
-          onTagPitchContact={(f) => {
-            if (Number.isFinite(f)) setContactFrame(f);
-          }}
-          taggable={true}
-        />
+      {url && (
+        <div>
+          <VideoTagger
+            source={url}
+            metadata={{ label: `Pitch tagging: ${pitcher}` }}
+            fps={FPS}
+            taggable
+            onTagPitchContact={(f) => setFrame(f)}
+          />
+        </div>
       )}
 
-      {contactFrame != null && <div>Tagged: contact={contactFrame}</div>}
+      {frame != null && <div>Tagged contact={frame}, FPS={FPS}</div>}
 
       <label>
         Description:
-        <input
-          type="text"
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-        />
+        <input value={desc} onChange={(e) => setDesc(e.target.value)} />
       </label>
 
-      <button type="submit" disabled={!selectedPitcher || !file || contactFrame == null || busy}>
+      <button type="submit" disabled={!pitcher || !file || frame == null || busy}>
         {busy ? "Saving…" : "Save Pitch"}
       </button>
-
-      {error && <div style={{ color: "crimson" }}>{error}</div>}
+      {err && <div style={{ color: "crimson" }}>{err}</div>}
     </form>
   );
 }

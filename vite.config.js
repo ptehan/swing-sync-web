@@ -1,37 +1,23 @@
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-import path from 'path';
+// vite.config.js
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react()],
-  base: '/swing-sync-web/',   // 👈 the repo name here
-  resolve: {
-    alias: {
-      '@ffmpeg/ffmpeg': path.resolve(
-        __dirname,
-        'node_modules/@ffmpeg/ffmpeg/dist/esm/index.js'
-      ),
-    },
-  },
-  assetsInclude: ['**/*.wasm'],
+  base: mode === "production" ? "/swing-sync-web/" : "/",
+  assetsInclude: ["**/*.wasm"],
+
+  // 👇 Force ffmpeg to be pre-bundled so Vite stops complaining
   optimizeDeps: {
-    exclude: ['@ffmpeg/ffmpeg'],
+    include: ["@ffmpeg/ffmpeg"],
   },
-  server: {
-    fs: {
-      allow: ['.'],
-    },
-    headers: {
-      'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'require-corp',
-    },
-    configureServer({ app }) {
-      app.use((req, res, next) => {
-        if (req.url.endsWith('.wasm')) {
-          res.setHeader('Content-Type', 'application/wasm');
-        }
-        next();
-      });
+
+  // 👇 Ensure Vite serves .wasm correctly
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: undefined,
+      },
     },
   },
-});
+}));
