@@ -31,9 +31,11 @@ async function exportPitcherSwingStartFrame(pitchBlob, swingBlob, pitcherName) {
       new Promise((r) => (swingVideo.onloadedmetadata = r)),
     ]);
 
+    // compute when swing starts in pitch timeline
     const diff = Math.max(pitchVideo.duration - swingVideo.duration, 0);
     pitchVideo.currentTime = diff;
 
+    // wait until frame is fully decoded
     await new Promise((resolve) => {
       pitchVideo.onseeked = () => {
         const waitDecode = () => {
@@ -52,8 +54,11 @@ async function exportPitcherSwingStartFrame(pitchBlob, swingBlob, pitcherName) {
 
     canvas.toBlob(
       (blob) => {
-        if (blob) downloadBlob(blob, `${pitcherName}_swing_start_frame.png`);
-        else throw new Error("Failed to render canvas frame.");
+        if (blob) {
+          downloadBlob(blob, `${pitcherName}_swing_start_frame.png`);
+        } else {
+          throw new Error("Failed to render canvas frame.");
+        }
       },
       "image/png",
       1.0
@@ -141,10 +146,13 @@ async function renderMatchup(pitchBlob, swingBlob, info, fps = 30) {
   let holdFinal = false;
   let finalFrameTime = 0;
   let replaying = false;
-  let swingStartTime = 0;
 
-  const frames = (info.contactFrame ?? 0) - (info.startFrame ?? 0) + 1;
-  const swingDurationSeconds = frames / 30;
+  // ✅ Corrected swing duration calculation
+  const frames =
+    info.contactFrame != null && info.startFrame != null
+      ? info.contactFrame - info.startFrame + 1
+      : 0;
+  const swingDurationSeconds = frames / fps;
   const trueSwingDuration = swingDurationSeconds.toFixed(3);
 
   const titleLines = [
@@ -161,6 +169,7 @@ async function renderMatchup(pitchBlob, swingBlob, info, fps = 30) {
     const elapsed = (performance.now() - startTime) / 1000;
     ctx.clearRect(0, 0, width, height);
 
+    // ---- TITLE ----
     if (!replaying && elapsed < titleSec) {
       ctx.fillStyle = "black";
       ctx.fillRect(0, 0, width, height);
@@ -183,6 +192,7 @@ async function renderMatchup(pitchBlob, swingBlob, info, fps = 30) {
       return;
     }
 
+    // ---- FROZEN START ----
     if (!replaying && elapsed < titleSec + freezeStartSec) {
       if (pitchFirst.complete) ctx.drawImage(pitchFirst, 0, 0, pitchW, height);
       if (swingFirst.complete)
@@ -202,20 +212,13 @@ async function renderMatchup(pitchBlob, swingBlob, info, fps = 30) {
       swingVideo.playbackRate = replaying ? 0.25 : 1;
       swingVideo.play().catch(() => {});
       startedSwing = true;
-      swingStartTime = performance.now();
     }
 
     ctx.drawImage(pitchVideo, 0, 0, pitchW, height);
-
-    if (startedSwing) {
-      const elapsedSinceSwingStart = (performance.now() - swingStartTime) / 1000;
-      const flashDuration = 3 / fps;
-      if (elapsedSinceSwingStart <= flashDuration) {
-        ctx.fillStyle = "rgba(255,255,0,0.35)";
-        ctx.fillRect(0, 0, pitchW, height);
-      }
+    if (startedSwing && !endedSwing) {
+      ctx.fillStyle = "rgba(255,255,0,0.35)";
+      ctx.fillRect(0, 0, pitchW, height);
     }
-
     ctx.drawImage(swingVideo, pitchW, 0, swingW, height);
 
     endedPitch = pitchVideo.ended;
@@ -257,7 +260,6 @@ async function renderMatchup(pitchBlob, swingBlob, info, fps = 30) {
 
         let replayFinalTime = 0;
         let replayHolding = false;
-        let replaySwingStartTime = 0;
 
         const replayDraw = () => {
           const elapsedReplay = (performance.now() - replayStart) / 1000;
@@ -267,20 +269,13 @@ async function renderMatchup(pitchBlob, swingBlob, info, fps = 30) {
           if (!startedSwing && elapsedReplay >= replayDiff) {
             swingVideo.play().catch(() => {});
             startedSwing = true;
-            replaySwingStartTime = performance.now();
           }
-
-          if (startedSwing) {
-            const elapsedSinceSwingStart =
-              (performance.now() - replaySwingStartTime) / 1000;
-            const flashDuration = 3 / fps;
-            if (elapsedSinceSwingStart <= flashDuration) {
-              ctx.fillStyle = "rgba(255,255,0,0.35)";
-              ctx.fillRect(0, 0, pitchW, height);
-            }
+          if (startedSwing && !endedSwing) {
+            ctx.fillStyle = "rgba(255,255,0,0.35)";
+            ctx.fillRect(0, 0, pitchW, height);
           }
-
           ctx.drawImage(swingVideo, pitchW, 0, swingW, height);
+
           ctx.lineWidth = 4;
           ctx.strokeStyle = "black";
           ctx.fillStyle = "white";
@@ -317,35 +312,203 @@ async function renderMatchup(pitchBlob, swingBlob, info, fps = 30) {
   requestAnimationFrame(draw);
   await done;
 
-  // --- main video blob ---
   const blob = new Blob(chunks, { type: "video/webm" });
+  URL.revokeObjectURL(pitchVideo.src);
+  URL.revokeObjectURL(swingVideo.src);
+  return blob;
+}
 
-  // --- attempt MP4 conversion if supported ---
-  let finalBlob = blob;
-  if (MediaRecorder.isTypeSupported("video/mp4;codecs=avc1")) {
+// ---------- UI ----------
+export default function MatchupSimulator({
+  hitters,
+  swings,
+  pitchers,
+  pitches,
+  matchups,
+  setMatchups,
+}) {
+  const [selectedHitter, setSelectedHitter] = useState("");
+  const [selectedSwingIndex, setSelectedSwingIndex] = useState(null);
+  const [selectedPitcher, setSelectedPitcher] = useState("");
+  const [selectedPitchIndex, setSelectedPitchIndex] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const pitcherPitches = useMemo(
+    () => pitches.filter((p) => p.pitcherName === selectedPitcher),
+    [pitches, selectedPitcher]
+  );
+
+  async function handleRender() {
+    if (
+      !selectedHitter ||
+      selectedSwingIndex == null ||
+      !selectedPitcher ||
+      selectedPitchIndex == null
+    ) {
+      setError("Select all options");
+      return;
+    }
+
     try {
-      console.log("✅ Browser supports MP4; converting...");
-      const video = document.createElement("video");
-      video.src = URL.createObjectURL(blob);
-      await video.play().catch(() => {});
-      const stream2 = video.captureStream();
-      const rec2 = new MediaRecorder(stream2, {
-        mimeType: "video/mp4;codecs=avc1",
+      setBusy(true);
+      setError("");
+
+      const swing = swings.find(
+        (s, i) => s.hitterName === selectedHitter && i === selectedSwingIndex
+      );
+      const pitch = pitcherPitches[selectedPitchIndex];
+
+      const [pitchBlob, swingBlob] = await Promise.all([
+        getPitchClipBlob(pitch.videoKey),
+        getSwingClipBlob(swing.videoKey),
+      ]);
+
+      const info = {
+        hitterName: selectedHitter,
+        swingDesc: swing?.description || "",
+        pitcherName: selectedPitcher,
+        pitchDesc: pitch?.description || "",
+        contactFrame: swing?.contactFrame,
+        startFrame: swing?.startFrame,
+      };
+
+      const blob = await renderMatchup(pitchBlob, swingBlob, info);
+      const videoKey = `${selectedHitter}_${selectedSwingIndex}_vs_${selectedPitcher}_${selectedPitchIndex}_sidebyside`;
+
+      await saveMatchupClip(videoKey, blob, {
+        hitterName: selectedHitter,
+        swingIndex: selectedSwingIndex,
+        pitcherName: selectedPitcher,
+        pitchIndex: selectedPitchIndex,
+        labelType: "sidebyside",
+        description: `${swing?.description || ""} vs ${pitch?.description || ""}`,
       });
-      const mp4Chunks = [];
-      rec2.ondataavailable = (e) => e.data && mp4Chunks.push(e.data);
-      const done2 = new Promise((r) => (rec2.onstop = r));
-      rec2.start();
-      await new Promise((r) => setTimeout(r, blob.size / 20000));
-      rec2.stop();
-      await done2;
-      finalBlob = new Blob(mp4Chunks, { type: "video/mp4" });
+
+      const fresh = await listMatchupClipKeys();
+      setMatchups(fresh);
+
+      downloadBlob(blob, `${selectedHitter}_vs_${selectedPitcher}.webm`);
     } catch (err) {
-      console.warn("MP4 conversion failed, keeping WebM", err);
+      console.error(err);
+      setError(err.message);
+    } finally {
+      setBusy(false);
     }
   }
 
-  URL.revokeObjectURL(pitchVideo.src);
-  URL.revokeObjectURL(swingVideo.src);
-  return finalBlob;
+  async function handleExportPitchStart() {
+    if (
+      !selectedPitcher ||
+      selectedPitchIndex == null ||
+      !selectedHitter ||
+      selectedSwingIndex == null
+    ) {
+      setError("Select both pitch and swing first.");
+      return;
+    }
+    try {
+      setBusy(true);
+      const pitch = pitcherPitches[selectedPitchIndex];
+      const swing = swings.find(
+        (s, i) => s.hitterName === selectedHitter && i === selectedSwingIndex
+      );
+      const [pitchBlob, swingBlob] = await Promise.all([
+        getPitchClipBlob(pitch.videoKey),
+        getSwingClipBlob(swing.videoKey),
+      ]);
+      await exportPitcherSwingStartFrame(pitchBlob, swingBlob, selectedPitcher);
+    } catch (e) {
+      console.error(e);
+      setError("Failed to export swing-start frame.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ padding: 16 }}>
+      <h2>Matchup Simulator</h2>
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+          maxWidth: 400,
+        }}
+      >
+        <select
+          value={selectedHitter}
+          onChange={(e) => {
+            setSelectedHitter(e.target.value);
+            setSelectedSwingIndex(null);
+          }}
+          disabled={busy}
+        >
+          <option value="">-- select hitter --</option>
+          {hitters.map((h) => (
+            <option key={h.name} value={h.name}>
+              {h.name}
+            </option>
+          ))}
+        </select>
+
+        <select
+          value={selectedSwingIndex ?? ""}
+          onChange={(e) => setSelectedSwingIndex(Number(e.target.value))}
+          disabled={!selectedHitter || busy}
+        >
+          <option value="">-- select swing --</option>
+          {swings
+            .filter((s) => s.hitterName === selectedHitter)
+            .map((s, i) => (
+              <option key={i} value={i}>
+                Swing {i + 1}
+                {s.description ? ` – ${s.description}` : ""}
+              </option>
+            ))}
+        </select>
+
+        <select
+          value={selectedPitcher}
+          onChange={(e) => {
+            setSelectedPitcher(e.target.value);
+            setSelectedPitchIndex(null);
+          }}
+          disabled={busy}
+        >
+          <option value="">-- select pitcher --</option>
+          {pitchers.map((p) => (
+            <option key={p.name} value={p.name}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+
+        <select
+          value={selectedPitchIndex ?? ""}
+          onChange={(e) => setSelectedPitchIndex(Number(e.target.value))}
+          disabled={!selectedPitcher || busy}
+        >
+          <option value="">-- select pitch --</option>
+          {pitcherPitches.map((p, i) => (
+            <option key={i} value={i}>
+              Pitch {i + 1}
+              {p.description ? ` – ${p.description}` : ""}
+            </option>
+          ))}
+        </select>
+
+        <button onClick={handleRender} disabled={busy}>
+          Render Side-by-Side
+        </button>
+        <button onClick={handleExportPitchStart} disabled={busy}>
+          Export Pitcher Swing-Start Frame
+        </button>
+      </div>
+
+      {error && <div style={{ color: "crimson" }}>{error}</div>}
+      {busy && <div>Working…</div>}
+    </div>
+  );
 }
