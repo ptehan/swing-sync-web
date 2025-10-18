@@ -14,6 +14,43 @@ export const STORE_PITCH_CLIPS = "pitchClips";
 export const STORE_SWING_CLIPS = "swingClips";
 export const STORE_MATCHUP_CLIPS = "matchupClips";
 
+// ======== RE-ENCODE WEBM TO MP4 (no FFmpeg) ========
+export async function reencodeToMp4(inputBlob) {
+  const video = document.createElement("video");
+  video.src = URL.createObjectURL(inputBlob);
+  await new Promise((resolve, reject) => {
+    video.onloadedmetadata = resolve;
+    video.onerror = reject;
+  });
+
+  const canvas = document.createElement("canvas");
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  const ctx = canvas.getContext("2d");
+
+  const stream = canvas.captureStream(30);
+  const recorder = new MediaRecorder(stream, { mimeType: "video/webm" });
+  const chunks = [];
+  recorder.ondataavailable = e => e.data.size && chunks.push(e.data);
+
+  recorder.start();
+  const frameDuration = 1000 / 30;
+
+  for (let t = 0; t < video.duration; t += frameDuration / 1000) {
+    video.currentTime = t;
+    await new Promise(r => (video.onseeked = r));
+    ctx.drawImage(video, 0, 0);
+    await new Promise(r => setTimeout(r, frameDuration));
+  }
+
+  recorder.stop();
+  await new Promise(r => (recorder.onstop = r));
+
+  const reencodedBlob = new Blob(chunks, { type: "video/mp4" });
+  return reencodedBlob;
+}
+
+
 /* ===== Utilities ===== */
 function blobFromBytes(bytes, type = "video/webm") {
   try {

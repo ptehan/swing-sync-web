@@ -41,12 +41,27 @@ async function captureFrames(file, contactFrame, FPS) {
       const chunks = [];
       const rec = new MediaRecorder(stream, { mimeType: "video/webm" });
       rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-      rec.onstop = () => {
-        const blob = new Blob(chunks, { type: "video/webm" });
-        log("✅ complete", blob.size, "bytes");
-        if (blob.size < 512) reject(new Error("Empty output"));
-        else resolve({ blob, preOffsetMs: 0, postOffsetMs: 0 });
-      };
+rec.onstop = async () => {
+  const blob = new Blob(chunks, { type: "video/webm" });
+  log("✅ complete", blob.size, "bytes");
+
+  if (blob.size < 512) {
+    reject(new Error("Empty output"));
+    return;
+  }
+
+  // --- 🔹 re-encode to a clean MP4 ---
+  try {
+    const mp4Blob = await reencodeToMp4(blob);
+    log("🎞️ reencoded to mp4", mp4Blob.size, "bytes");
+    resolve({ blob: mp4Blob, preOffsetMs: 0, postOffsetMs: 0 });
+  } catch (err) {
+    log("⚠️ reencode failed, using webm fallback", err);
+    resolve({ blob, preOffsetMs: 0, postOffsetMs: 0 });
+  }
+};
+
+
       rec.start();
 
       // Helper to draw a single frame after a seek
@@ -91,6 +106,8 @@ async function captureFrames(file, contactFrame, FPS) {
     video.onerror = () => reject(new Error("Video load failed"));
   });
 }
+
+
 
 export default function AddPitchForm({
   pitchers,
