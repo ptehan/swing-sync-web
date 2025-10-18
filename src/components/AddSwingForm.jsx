@@ -3,13 +3,15 @@ import React, { useState, useCallback } from "react";
 import VideoTagger from "./VideoTagger";
 import { saveSwingClip } from "../utils/dataModel";
 
-// 🔹 Deterministic frame-by-frame capture (AddPitchForm logic reused)
+/* =====================================================================================
+   Deterministic frame-by-frame capture — no arbitrary delays, full encoder drain.
+   ===================================================================================== */
 async function captureFrames(file, startFrame, endFrame, FPS) {
   console.log("[captureFrames] manual stepping start");
   const startTimeSec = startFrame / FPS;
   const endTimeSec = endFrame / FPS;
   const frameStep = 1 / FPS;
-  const frameCount = Math.ceil((endTimeSec - startTimeSec) * FPS) ;
+  const frameCount = Math.ceil((endTimeSec - startTimeSec) * FPS);
 
   console.log(
     `[captureFrames] start=${startTimeSec.toFixed(3)} end=${endTimeSec.toFixed(
@@ -46,7 +48,7 @@ async function captureFrames(file, startFrame, endFrame, FPS) {
       rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
       rec.onstop = () => {
         const blob = new Blob(chunks, { type: "video/webm" });
-        const swingDurationSec = frameCount / FPS; // 🔹 total clip duration
+        const swingDurationSec = frameCount / FPS;
         log(
           "complete",
           blob.size,
@@ -77,14 +79,7 @@ async function captureFrames(file, startFrame, endFrame, FPS) {
             "expected end =",
             endTimeSec.toFixed(3)
           );
-
-          // 🕐 wait briefly to flush final encoder clusters
-          setTimeout(() => {
-            if (rec.state === "recording") {
-              log("🛑 stopping recorder (after drain delay)");
-              rec.stop();
-            }
-          }, 300);
+          finalizeRecording();
           return;
         }
 
@@ -105,6 +100,19 @@ async function captureFrames(file, startFrame, endFrame, FPS) {
         };
       };
 
+      const finalizeRecording = async () => {
+        // 🟡 hold final frame a few beats so encoder consumes it
+        for (let i = 0; i < 5; i++) {
+          ctx.drawImage(video, 0, 0, w, h);
+          await new Promise((r) => setTimeout(r, 1000 / FPS));
+        }
+
+        // 🕐 wait for MediaRecorder to flush buffered frames
+        await new Promise((r) => setTimeout(r, 500));
+        log("🛑 stopping recorder (drained)");
+        rec.stop();
+      };
+
       drawNext();
     };
 
@@ -112,6 +120,9 @@ async function captureFrames(file, startFrame, endFrame, FPS) {
   });
 }
 
+/* =====================================================================================
+   React component
+   ===================================================================================== */
 export default function AddSwingForm({
   hitters,
   onAddSwing,
@@ -169,7 +180,6 @@ export default function AddSwingForm({
         .toString(36)
         .slice(2, 8)}`;
 
-      // 🔹 Store duration along with clip
       await saveSwingClip(
         videoKey,
         blob,

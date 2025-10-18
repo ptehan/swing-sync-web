@@ -3,20 +3,20 @@ import React, { useState, useCallback } from "react";
 import VideoTagger from "./VideoTagger";
 import { savePitchClip } from "../utils/dataModel";
 
-// Manual frame-by-frame capture with visible frame numbers & encoder drain
 async function captureFrames(file, contactFrame, FPS) {
-  console.log("[captureFrames] manual stepping start");
+  console.log("[captureFrames] deterministic capture start");
+
   const contactTimeSec = contactFrame / FPS;
   const backtrackSec = 2;
   const startTimeSec = Math.max(0, contactTimeSec - backtrackSec);
   const endTimeSec = contactTimeSec;
   const frameStep = 1 / FPS;
-  const frameCount = Math.ceil((endTimeSec - startTimeSec) * FPS) + 1;
+  const frameCount = Math.ceil((endTimeSec - startTimeSec) * FPS);
 
   console.log(
     `[captureFrames] start=${startTimeSec.toFixed(3)} end=${endTimeSec.toFixed(
       3
-    )} frames=${frameCount}`
+    )} frameCount=${frameCount}`
   );
 
   return new Promise((resolve, reject) => {
@@ -27,7 +27,7 @@ async function captureFrames(file, contactFrame, FPS) {
     video.playsInline = true;
     video.preload = "auto";
 
-    const log = (...args) => console.log("[captureFrames]", ...args);
+    const log = (...a) => console.log("[captureFrames]", ...a);
 
     video.onloadedmetadata = async () => {
       const w = video.videoWidth;
@@ -36,74 +36,56 @@ async function captureFrames(file, contactFrame, FPS) {
       canvas.width = w;
       canvas.height = h;
       const ctx = canvas.getContext("2d");
-      ctx.font = "40px monospace";
-      ctx.fillStyle = "yellow";
-      ctx.lineWidth = 4;
-      ctx.strokeStyle = "black";
 
       const stream = canvas.captureStream(FPS);
       const chunks = [];
       const rec = new MediaRecorder(stream, { mimeType: "video/webm" });
-
       rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
       rec.onstop = () => {
         const blob = new Blob(chunks, { type: "video/webm" });
-        log("complete", blob.size, "bytes");
+        log("✅ complete", blob.size, "bytes");
         if (blob.size < 512) reject(new Error("Empty output"));
         else resolve({ blob, preOffsetMs: 0, postOffsetMs: 0 });
       };
-
       rec.start();
-      log(`recording ${frameCount} frames (~${(frameCount / FPS).toFixed(2)}s)`);
 
-      let frameIndex = 0;
-      let finished = false;
-
-      const drawNext = () => {
-        if (frameIndex >= frameCount) {
-          finished = true;
-          log(
-            "STOPPING — last painted time =",
-            video.currentTime.toFixed(3),
-            "expected end =",
-            endTimeSec.toFixed(3)
-          );
-          // wait for encoder drain
-          const waitForDrain = () => {
-            if (stream.getVideoTracks()[0].readyState === "ended") {
-              rec.stop();
-              return;
-            }
-            // small delay before stopping to flush last clusters
-            setTimeout(() => {
-              log("🛑 stopping recorder (after drain delay)");
-              rec.stop();
-            }, 300);
+      // Helper to draw a single frame after a seek
+      async function seekAndDraw(t) {
+        return new Promise((res) => {
+          let settled = false;
+          video.currentTime = Math.min(t, video.duration - 0.0001);
+          video.onseeked = () => {
+            if (settled) return;
+            const waitReady = () => {
+              if (video.readyState < 4) {
+                requestAnimationFrame(waitReady);
+                return;
+              }
+              ctx.drawImage(video, 0, 0, w, h);
+              settled = true;
+              setTimeout(res, 1000 / FPS);
+            };
+            waitReady();
           };
-          waitForDrain();
-          return;
-        }
+        });
+      }
 
-        const t = startTimeSec + frameIndex * frameStep;
-        video.currentTime = t;
+      // Sequentially draw all frames
+      for (let i = 0; i < frameCount; i++) {
+        const t = startTimeSec + i * frameStep;
+        await seekAndDraw(t);
+      }
 
-        video.onseeked = () => {
-          const waitForDecode = () => {
-            if (video.readyState < 4) {
-              requestAnimationFrame(waitForDecode);
-              return;
-            }
-ctx.drawImage(video, 0, 0, w, h);
-log("PAINTED frame", frameIndex, "time", t.toFixed(3));
-frameIndex++;
-requestAnimationFrame(drawNext);
+      // 🔹 Explicitly draw and hold the true contact frame once more
+      log("Drawing final contact frame at", endTimeSec.toFixed(3));
+      await seekAndDraw(endTimeSec);
+      for (let i = 0; i < 3; i++) {
+        ctx.drawImage(video, 0, 0, w, h);
+        await new Promise((r) => setTimeout(r, 1000 / FPS));
+      }
 
-          };
-          waitForDecode();
-        };
-      };
-
-      drawNext();
+      log("🛑 stopping recorder after verified final frame");
+      rec.stop();
     };
 
     video.onerror = () => reject(new Error("Video load failed"));
