@@ -3,19 +3,20 @@ import React, { useState, useCallback } from "react";
 import VideoTagger from "./VideoTagger";
 import { saveSwingClip } from "../utils/dataModel";
 
-/* ---------- FRAME CAPTURE (MP4 OUTPUT) ---------- */
+/* =====================================================================================
+   Deterministic capture: records exactly from startFrame → endFrame, includes full contact frame.
+   ===================================================================================== */
 async function captureFrames(file, startFrame, endFrame, FPS) {
-  console.log("[captureFrames] MP4 deterministic capture start");
+  console.log("[captureFrames] deterministic trim start");
 
   const startTimeSec = startFrame / FPS;
   const endTimeSec = endFrame / FPS;
-  const frameStep = 1 / FPS;
-  const frameCount = Math.ceil((endTimeSec - startTimeSec) * FPS);
+  const durationSec = endTimeSec - startTimeSec;
 
   console.log(
-    `[captureFrames] range ${startFrame}-${endFrame} (${frameCount} frames, ${(
-      frameCount / FPS
-    ).toFixed(2)}s)`
+    `[captureFrames] start=${startTimeSec.toFixed(3)} end=${endTimeSec.toFixed(
+      3
+    )} duration=${durationSec.toFixed(3)}`
   );
 
   return new Promise((resolve, reject) => {
@@ -34,57 +35,81 @@ async function captureFrames(file, startFrame, endFrame, FPS) {
       canvas.height = h;
       const ctx = canvas.getContext("2d");
 
-      // 🎥 Use MP4 if available, else WebM fallback
-      const mp4Mime = "video/mp4;codecs=avc1.42E01E";
-      const fallbackMime = "video/webm;codecs=vp9";
-      const mimeType = MediaRecorder.isTypeSupported(mp4Mime)
-        ? mp4Mime
-        : fallbackMime;
-
+      const stream = canvas.captureStream(FPS);
       const chunks = [];
-      const rec = new MediaRecorder(canvas.captureStream(FPS), {
-        mimeType,
-        videoBitsPerSecond: 10_000_000,
-      });
+      const rec = new MediaRecorder(stream, { mimeType: "video/webm" });
 
       rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
       rec.onstop = () => {
-        const blob = new Blob(chunks, { type: mimeType });
-        console.log(`[captureFrames] ✅ recorded ${blob.size} bytes as ${mimeType}`);
+        const blob = new Blob(chunks, { type: "video/webm" });
+        const swingDurationSec = durationSec;
+        console.log(
+          `[captureFrames] ✅ done: ${blob.size} bytes, ${swingDurationSec.toFixed(
+            3
+          )} s`
+        );
         if (blob.size < 512) reject(new Error("Empty output"));
-        else resolve({ blob });
+        else
+          resolve({
+            blob,
+            swingDurationSec,
+            preOffsetMs: 0,
+            postOffsetMs: 0,
+          });
       };
 
-      rec.start();
-      console.log(`[captureFrames] recording ${frameCount} frames…`);
+      // seek to the exact start frame
+      video.currentTime = startTimeSec;
+      await new Promise((r) => (video.onseeked = r));
+      ctx.drawImage(video, 0, 0, w, h);
 
-      let frameIndex = 0;
-      const drawNext = () => {
-        if (frameIndex >= frameCount) {
-          setTimeout(() => rec.stop(), 250);
+      // start recording
+      rec.start();
+      console.log(`[captureFrames] recording ${durationSec.toFixed(3)} s section`);
+      video.playbackRate = 1.0;
+      video.play().catch(() => {});
+
+      const stopTime = startTimeSec + durationSec;
+
+      const poll = () => {
+        ctx.drawImage(video, 0, 0, w, h);
+
+        // not yet at end → keep going
+        if (video.currentTime + 1 / FPS < stopTime && !video.ended) {
+          requestAnimationFrame(poll);
           return;
         }
 
-        const t = startTimeSec + frameIndex * frameStep;
-        video.currentTime = t;
-        video.onseeked = () => {
-          if (video.readyState < 4) {
-            requestAnimationFrame(drawNext);
-            return;
+        // --- finalize section ---
+        console.log("[captureFrames] reached end frame, holding contact frame");
+        video.pause();
+
+        // hold final contact frame for encoder to catch up
+        let extraFrames = 4;
+        const hold = () => {
+          if (extraFrames-- > 0) {
+            ctx.drawImage(video, 0, 0, w, h);
+            requestAnimationFrame(hold);
+          } else {
+            setTimeout(() => {
+              console.log("[captureFrames] stopping recorder (drained)");
+              rec.stop();
+            }, 120);
           }
-          ctx.drawImage(video, 0, 0, w, h);
-          frameIndex++;
-          setTimeout(() => requestAnimationFrame(drawNext), 1000 / FPS);
         };
+        requestAnimationFrame(hold);
       };
-      drawNext();
+
+      requestAnimationFrame(poll);
     };
 
     video.onerror = () => reject(new Error("Video load failed"));
   });
 }
 
-/* ---------- COMPONENT ---------- */
+/* =====================================================================================
+   React component
+   ===================================================================================== */
 export default function AddSwingForm({
   hitters,
   onAddSwing,
@@ -126,8 +151,17 @@ export default function AddSwingForm({
     try {
       setBusy(true);
       console.log("[AddSwingForm] capture start");
-      const { blob } = await captureFrames(file, startFrame, contactFrame, FPS);
-      console.log("[AddSwingForm] final blob size", blob.size);
+      const { blob, swingDurationSec } = await captureFrames(
+        file,
+        startFrame,
+        contactFrame,
+        FPS
+      );
+      console.log(
+        `[AddSwingForm] final blob size ${blob.size}, duration ${swingDurationSec.toFixed(
+          3
+        )}s`
+      );
 
       const videoKey = `swing_${selectedHitter}_${Date.now()}_${Math.random()
         .toString(36)
@@ -139,7 +173,8 @@ export default function AddSwingForm({
         selectedHitter,
         description.trim(),
         startFrame,
-        contactFrame
+        contactFrame,
+        swingDurationSec
       );
 
       onAddSwing(selectedHitter, {
@@ -147,9 +182,10 @@ export default function AddSwingForm({
         contactFrame,
         videoKey,
         description: description.trim(),
+        swingDurationSec,
       });
 
-      alert("Swing saved!");
+      alert(`Swing saved! Duration: ${swingDurationSec.toFixed(3)}s`);
       if (onClose) onClose();
     } catch (err) {
       console.error("[AddSwingForm] save failed:", err);

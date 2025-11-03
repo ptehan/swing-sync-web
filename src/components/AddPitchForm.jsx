@@ -3,20 +3,20 @@ import React, { useState, useCallback } from "react";
 import VideoTagger from "./VideoTagger";
 import { savePitchClip } from "../utils/dataModel";
 
+/* ---------- FRAME CAPTURE (MP4 OUTPUT, EXACT 60 FRAMES) ---------- */
 async function captureFrames(file, contactFrame, FPS) {
-  console.log("[captureFrames] deterministic capture start");
+  console.log("[captureFrames] MP4 deterministic capture start");
 
-  const contactTimeSec = contactFrame / FPS;
-  const backtrackSec = 2;
-  const startTimeSec = Math.max(0, contactTimeSec - backtrackSec);
-  const endTimeSec = contactTimeSec;
+  const totalFrames = FPS * 2; // 60 frames @ 30fps
+  const endFrame = contactFrame;
+  const startFrame = Math.max(0, endFrame - totalFrames + 1);
+  const startTimeSec = startFrame / FPS;
   const frameStep = 1 / FPS;
-  const frameCount = Math.ceil((endTimeSec - startTimeSec) * FPS);
 
   console.log(
-    `[captureFrames] start=${startTimeSec.toFixed(3)} end=${endTimeSec.toFixed(
-      3
-    )} frameCount=${frameCount}`
+    `[captureFrames] start=${startFrame}, end=${endFrame}, total=${totalFrames} frames (${(
+      totalFrames / FPS
+    ).toFixed(2)}s)`
   );
 
   return new Promise((resolve, reject) => {
@@ -27,8 +27,6 @@ async function captureFrames(file, contactFrame, FPS) {
     video.playsInline = true;
     video.preload = "auto";
 
-    const log = (...a) => console.log("[captureFrames]", ...a);
-
     video.onloadedmetadata = async () => {
       const w = video.videoWidth;
       const h = video.videoHeight;
@@ -37,78 +35,58 @@ async function captureFrames(file, contactFrame, FPS) {
       canvas.height = h;
       const ctx = canvas.getContext("2d");
 
-      const stream = canvas.captureStream(FPS);
+      const mp4Mime = "video/mp4;codecs=avc1.42E01E";
+      const fallbackMime = "video/webm;codecs=vp9";
+      const mimeType = MediaRecorder.isTypeSupported(mp4Mime)
+        ? mp4Mime
+        : fallbackMime;
+
       const chunks = [];
-      const rec = new MediaRecorder(stream, { mimeType: "video/webm" });
+      const rec = new MediaRecorder(canvas.captureStream(FPS), {
+        mimeType,
+        videoBitsPerSecond: 10_000_000,
+      });
+
       rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-rec.onstop = async () => {
-  const blob = new Blob(chunks, { type: "video/webm" });
-  log("✅ complete", blob.size, "bytes");
-
-  if (blob.size < 512) {
-    reject(new Error("Empty output"));
-    return;
-  }
-
-  // --- 🔹 re-encode to a clean MP4 ---
-  try {
-    const mp4Blob = await reencodeToMp4(blob);
-    log("🎞️ reencoded to mp4", mp4Blob.size, "bytes");
-    resolve({ blob: mp4Blob, preOffsetMs: 0, postOffsetMs: 0 });
-  } catch (err) {
-    log("⚠️ reencode failed, using webm fallback", err);
-    resolve({ blob, preOffsetMs: 0, postOffsetMs: 0 });
-  }
-};
-
+      rec.onstop = () => {
+        const blob = new Blob(chunks, { type: mimeType });
+        console.log(`[captureFrames] ✅ recorded ${blob.size} bytes as ${mimeType}`);
+        if (blob.size < 512) reject(new Error("Empty output"));
+        else resolve({ blob });
+      };
 
       rec.start();
+      console.log(`[captureFrames] recording exactly ${totalFrames} frames…`);
 
-      // Helper to draw a single frame after a seek
-      async function seekAndDraw(t) {
-        return new Promise((res) => {
-          let settled = false;
-          video.currentTime = Math.min(t, video.duration - 0.0001);
-          video.onseeked = () => {
-            if (settled) return;
-            const waitReady = () => {
-              if (video.readyState < 4) {
-                requestAnimationFrame(waitReady);
-                return;
-              }
-              ctx.drawImage(video, 0, 0, w, h);
-              settled = true;
-              setTimeout(res, 1000 / FPS);
-            };
-            waitReady();
-          };
-        });
-      }
+      let frameIndex = 0;
+      const drawNext = () => {
+        if (frameIndex >= totalFrames) {
+          // allow the last frame to fully render
+          setTimeout(() => rec.stop(), 500);
+          return;
+        }
 
-      // Sequentially draw all frames
-      for (let i = 0; i < frameCount; i++) {
-        const t = startTimeSec + i * frameStep;
-        await seekAndDraw(t);
-      }
+        const t = startTimeSec + frameIndex * frameStep;
+        video.currentTime = t;
+        video.onseeked = () => {
+          if (video.readyState < 4) {
+            requestAnimationFrame(drawNext);
+            return;
+          }
+          ctx.drawImage(video, 0, 0, w, h);
+          frameIndex++;
+          setTimeout(() => requestAnimationFrame(drawNext), 1000 / FPS);
+        };
+      };
 
-      // 🔹 Explicitly draw and hold the true contact frame once more
-      log("Drawing final contact frame at", endTimeSec.toFixed(3));
-      await seekAndDraw(endTimeSec);
-      for (let i = 0; i < 3; i++) {
-        ctx.drawImage(video, 0, 0, w, h);
-        await new Promise((r) => setTimeout(r, 1000 / FPS));
-      }
-
-      log("🛑 stopping recorder after verified final frame");
-      rec.stop();
+      drawNext();
     };
 
     video.onerror = () => reject(new Error("Video load failed"));
   });
 }
 
-
-
+/* ---------- COMPONENT ---------- */
 export default function AddPitchForm({
   pitchers,
   onAddPitch,
@@ -116,100 +94,114 @@ export default function AddPitchForm({
   onClose,
 }) {
   const FPS = Number(constants?.FPS) || 30;
-  const [pitcher, setPitcher] = useState("");
+  const [selectedPitcher, setSelectedPitcher] = useState("");
   const [file, setFile] = useState(null);
-  const [url, setUrl] = useState(null);
-  const [desc, setDesc] = useState("");
-  const [frame, setFrame] = useState(null);
-  const [err, setErr] = useState("");
+  const [videoUrl, setVideoUrl] = useState(null);
+  const [description, setDescription] = useState("");
+  const [contactFrame, setContactFrame] = useState(null);
+  const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const onFile = useCallback((e) => {
+  const onChangeFile = useCallback((e) => {
     const f = e.target.files?.[0] || null;
     setFile(f);
-    setFrame(null);
-    setUrl(f ? URL.createObjectURL(f) : null);
-    setErr("");
+    setContactFrame(null);
+    setVideoUrl(f ? URL.createObjectURL(f) : null);
+    setError("");
   }, []);
 
-  const submit = async (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!pitcher || !file || frame == null)
-      return setErr("Select pitcher, video, and tag frame");
+    setError("");
+
+    if (!selectedPitcher || !file || contactFrame == null) {
+      setError("Please select pitcher, choose video, and tag contact frame.");
+      return;
+    }
 
     try {
       setBusy(true);
       console.log("[AddPitchForm] capture start");
-      const { blob, preOffsetMs, postOffsetMs } = await captureFrames(
-        file,
-        frame,
-        FPS
-      );
+      const { blob } = await captureFrames(file, contactFrame, FPS);
       console.log("[AddPitchForm] final blob size", blob.size);
-      const key = `pitch_${pitcher}_${Date.now()}_${Math.random()
+
+      const videoKey = `pitch_${selectedPitcher}_${Date.now()}_${Math.random()
         .toString(36)
         .slice(2, 8)}`;
-      console.log("[AddPitchForm] saving clip", key);
-      await savePitchClip(key, blob, desc.trim(), frame);
-      onAddPitch(pitcher, {
-        contactFrame: frame,
-        videoKey: key,
-        description: desc.trim(),
-        preOffsetMs,
-        postOffsetMs,
+
+      await savePitchClip(videoKey, blob, description.trim(), contactFrame);
+
+      onAddPitch(selectedPitcher, {
+        contactFrame,
+        videoKey,
+        description: description.trim(),
       });
+
       alert("Pitch saved!");
-      onClose && onClose();
-    } catch (e2) {
-      console.error("[AddPitchForm] failed", e2);
-      setErr(e2.message);
+      if (onClose) onClose();
+    } catch (err) {
+      console.error("[AddPitchForm] save failed:", err);
+      setError(err.message || "Failed to save pitch.");
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <form onSubmit={submit} style={{ display: "grid", gap: 12 }}>
+    <form onSubmit={handleSubmit} style={{ display: "grid", gap: "12px" }}>
       <h3>Add Pitch</h3>
 
       <label>
         Pitcher:
-        <select value={pitcher} onChange={(e) => setPitcher(e.target.value)}>
+        <select
+          value={selectedPitcher}
+          onChange={(e) => setSelectedPitcher(e.target.value)}
+        >
           <option value="">-- Select Pitcher --</option>
           {pitchers.map((p) => (
-            <option key={p.name}>{p.name}</option>
+            <option key={p.name} value={p.name}>
+              {p.name}
+            </option>
           ))}
         </select>
       </label>
 
       <label>
         Pitch Video:
-        <input type="file" accept="video/*" onChange={onFile} />
+        <input type="file" accept="video/*" onChange={onChangeFile} />
       </label>
 
-      {url && (
+      {videoUrl && (
         <div>
           <VideoTagger
-            source={url}
-            metadata={{ label: `Pitch tagging: ${pitcher}` }}
+            source={videoUrl}
+            metadata={{ label: `Pitch tagging: ${selectedPitcher}` }}
             fps={FPS}
             taggable
-            onTagPitchContact={(f) => setFrame(f)}
+            onTagPitchContact={(f) => setContactFrame(f)}
           />
         </div>
       )}
 
-      {frame != null && <div>Tagged contact={frame}, FPS={FPS}</div>}
+      {contactFrame != null && <div>Tagged contact={contactFrame}, FPS={FPS}</div>}
 
       <label>
         Description:
-        <input value={desc} onChange={(e) => setDesc(e.target.value)} />
+        <input
+          type="text"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
       </label>
 
-      <button type="submit" disabled={!pitcher || !file || frame == null || busy}>
+      <button
+        type="submit"
+        disabled={!selectedPitcher || !file || contactFrame == null || busy}
+      >
         {busy ? "Saving…" : "Save Pitch"}
       </button>
-      {err && <div style={{ color: "crimson" }}>{err}</div>}
+
+      {error && <div style={{ color: "crimson" }}>{error}</div>}
     </form>
   );
 }
